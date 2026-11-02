@@ -15,6 +15,10 @@ const byteToChar = (() => {
 })();
 const charToByte = new Map(byteToChar.map((c, b) => [c, b]));
 
+const GLUE = /^[\u200d\ufe0f\ufe0e\u20e3\u{1F3FB}-\u{1F3FF}]/u;
+const RI_START = /^[\u{1F1E6}-\u{1F1FF}]/u;  // regional indicators: a pair of them is one flag
+const oddRI = t => (t.match(/[\u{1F1E6}-\u{1F1FF}]+$/u)?.[0].length ?? 0) / 2 % 2 === 1;  // 2 UTF-16 units each
+
 export class Tokenizer {
   constructor(json) {
     const m = json.model;
@@ -124,7 +128,15 @@ export class Tokenizer {
       units.push({ text: full.startsWith(prev) ? full.slice(prev.length) : this.decode(pending.map(j => ids[j]), false), idx: pending });
       prev = full; pending = [];
     }
-    return units;
+    // keep emoji sequences whole: joiners, variation selectors, keycaps and skin tones attach to the unit before them
+    const merged = [];
+    for (const u of units) {
+      const last = merged[merged.length - 1];
+      if (last && u.text && (GLUE.test(u.text) || last.text.endsWith("\u200d") || (RI_START.test(u.text) && oddRI(last.text)))) {
+        last.text += u.text; last.idx = last.idx.concat(u.idx);
+      } else merged.push({ text: u.text, idx: u.idx });
+    }
+    return merged;
   }
 
   id(tok) { return this.special.get(tok) ?? this.vocab.get(tok); }

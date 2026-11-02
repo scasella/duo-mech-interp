@@ -75,6 +75,8 @@ python tests/engine_ref.py <local checkpoint dir> engine_expected.json   # HF tr
 node tests/engine.mjs <served url> <expected url> <hub mirror url>        # same checks in headless Chromium WebGPU
 node tests/smoke.mjs <served url> <hub mirror url>                       # every explorer operation once, tiny inputs
 node tests/keyboard.mjs <served url>                                     # text fields keep focus when the keyboard opens
+node tests/e2e.mjs <site url> <out dir>                                  # end-user run of every feature on the deployed site
+node tests/profile.mjs <served url> <hub mirror url>                     # time per kernel type
 node tests/screens.mjs <served url> <hub mirror url> <out dir>           # screenshots at iPhone Duo viewport sizes
 ```
 

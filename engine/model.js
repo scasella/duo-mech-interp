@@ -368,15 +368,19 @@ export class Model {
 
   // ---------- forward ----------
 
-  _mm(xBuf, d, yBuf, M, add = false, xoff = 0) {
+  // y[M, rows] (+)= x[M, cols] . W^T. Up to 16 input rows go through the matrix-vector kernel (8 rows per pass),
+  // longer inputs through the tiled matmul.
+  _mm(xBuf, d, yBuf, M, add = false) {
     const g = this.gpu;
-    if (M <= 4) {
-      const wgs = Math.ceil(d.rows / 4);
+    if (M <= 16) {
+      const wgs = Math.ceil(d.rows / 64);
       const stride = Math.min(wgs, 32768);
-      g.run(`mv${M}${add ? "a" : ""}`, K.matvec(M, add), [xBuf, d.w, d.s, yBuf], [stride, Math.ceil(wgs / stride)],
-        [d.rows, d.cols, stride, xoff / 4]);
+      for (let m0 = 0; m0 < M; m0 += 8) {
+        const mm = Math.min(8, M - m0);
+        g.run(`mv${mm}${add ? "a" : ""}`, K.matvec(mm, add), [xBuf, d.w, d.s, yBuf], [stride, Math.ceil(wgs / stride)],
+          [d.rows, d.cols, stride, m0 * d.cols / 4, m0 * d.rows, 0, 0, 0]);
+      }
     } else {
-      if (xoff) throw new Error("matmul offset");
       g.run(`mm${add ? "a" : ""}`, K.matmul(add), [xBuf, d.w, d.s, yBuf], [Math.ceil(d.rows / 64), Math.ceil(M / 64)],
         [M, d.rows, d.cols, 0]);
     }

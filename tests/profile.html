@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>kernel profile</title>
+<pre id="log"></pre>
+<script type="module">
+// Times each kind of kernel of one forward pass (all layers), for decode (3 rows x 1 token) and a short prefill.
+import { Model, setHubBase } from "../engine/model.js";
+import * as K from "../engine/kernels.js";
+import * as Q from "../engine/kernels_qwen35.js";
+import { F } from "../engine/gpu.js";
+const q = new URLSearchParams(location.search);
+const log = (...a) => { document.getElementById("log").textContent += a.join(" ") + "\n"; console.log(...a); };
+window.__done = false;
+try {
+  setHubBase(q.get("hub"));
+  const m = await Model.load("Qwen/Qwen3.5-0.8B", { cache: false });
+  m.alloc(3, 256, 32);
+  const g = m.gpu, st = m.st;
+  const time = async (name, fn, reps = 1) => {
+    await g.idle();
+    const t0 = performance.now();
+    for (let i = 0; i < reps; i++) fn();
+    await g.idle();
+    const ms = (performance.now() - t0) / reps;
+    log(name.padEnd(34), ms.toFixed(0).padStart(8), "ms");
+    return ms;
+  };
+  for (const [M, T, rows] of [[3, 1, 3], [16, 16, 1]]) {
+    log(`--- M=${M} (${rows} rows x ${T} tokens), all 24 layers ---`);
+    g.write(st.ids, new Uint32Array(M));
+    g.write(st.pos, new Uint32Array(4));
+    await time("gather (embed)", () => g.run("gather", K.gather, [st.ids, m.embed.w, m.embed.s, st.x], M, [M, m.H, F(1), 0]));
+    await time("rmsnorm x48", () => { for (const ly of m.layers) { m._norm(st.x, ly.inNormB, st.xn, M, m.H); m._norm(st.x, ly.postNormB, st.xn, M, m.H); } });
+    await time("proj (qkv|z|b|a / q|k|v)", () => { for (const ly of m.layers) m._mm(st.xn, ly.proj, st.y, M); });
+    const lin = m.layers.map((ly, l) => [ly, l]).filter(([ly]) => ly.lin), full = m.layers.map((ly, l) => [ly, l]).filter(([ly]) => !ly.lin);
+    await time("conv x18", () => { for (const [ly, l] of lin) g.run(`conv${m.KS}`, Q.conv(m.KS), [st.y, ly.convB, st.lin[l].conv, st.c], [Math.ceil(m.C / 256), M], [T, m.C, m.Wlin, 0]); });
+    await time("conv state x18", () => { for (const [ly, l] of lin) g.run(`convst${m.KS}`, Q.convState(m.KS), [st.y, st.lin[l].conv], [Math.ceil(m.C / 256), rows], [T, m.C, m.Wlin, 0, rows, 0, 0, 0]); });
+    await time("delta rule x18", () => { for (const [ly, l] of lin) g.run("delta", Q.delta, [st.c, st.y, ly.alogB, ly.dtbB, ly.gnormB, ly.headScaleB, st.lin[l].S, st.o], [m.Hv, rows], [T, m.Hk, m.Hv, m.dk, m.dv, m.Wlin, m.C, 0, F(m.eps), m.Kd, 0, 0]); });
+    await time("attn prep x6", () => { for (const [ly, l] of full) g.run("attnprep", Q.attnPrep, [st.y, ly.qNormB, ly.kNormB, st.pos, st.q, st.kv[l].k, st.kv[l].v], [M, m.nh + m.nkv], [T, m.nh, m.nkv, m.hd, m.rot, m.maxLen, 0, F(m.eps), F(m.theta), m.Wfull, 0, 0]); });
+    await time("attention x6", () => { for (const [ly, l] of full) g.run("attn", Q.attention, [st.q, st.kv[l].k, st.kv[l].v, st.pos, st.y, st.sc, st.o], [M, m.nh], [T, m.nh, m.nkv, m.hd, m.maxLen, 0, F(1 / Math.sqrt(m.hd)), m.Wfull]); });
+    await time("out proj (+residual)", () => { for (const ly of m.layers) m._mm(st.o, ly.out, st.x, M, true); });
+    await time("gate|up", () => { for (const ly of m.layers) m._mm(st.xn, ly.gu, st.y, M); });
+    await time("swiglu + hook x24", () => { for (const ly of m.layers) g.run("swiglu", Q.swiglu(false), [st.y, m.noPush, st.a], [Math.ceil(m.I / 256), M], [M, m.I, T, 0, 0, 0, 0, 0]); });
+    await time("down (+residual)", () => { for (const ly of m.layers) m._mm(st.a, ly.down, st.x, M, true); });
+    if (M <= 4) await time("lm_head (248k x 1024) + argmax", () => { m._logits(M); g.run("argmax", K.argmax, [st.logits, st.amax], M, [m.V, 0, 0, 0]); });
+  }
+  window.__ok = true;
+} catch (e) { log("ERROR", e.stack || e); }
+window.__done = true;
+</script>

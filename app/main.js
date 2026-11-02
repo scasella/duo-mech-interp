@@ -565,6 +565,7 @@ function renderRun() {
     ov[l * I + n] = ex.scale ? best : best / 4;
   }
   map.setOverlay(ov);
+  $("#map-legend").textContent = `colour: each neuron's ${ex.scale ? "score" : "activation"} ${state.runPos >= 0 ? "at the selected token" : "at its strongest token"} (orange +, pink −) · tap a band to open its strongest neuron`;
 }
 
 // ---------- list tab ----------
