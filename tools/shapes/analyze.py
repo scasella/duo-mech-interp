@@ -288,7 +288,10 @@ def groups(run, layers, cache, probe_run=None, min_fire=None, max_rate=0.005, co
                 P, inv, aa, cc = P[sel], remap[inv][m], aa[m], cc[m]
             A = np.zeros((len(P), len(g)), np.float32)
             A[inv, cc] = aa
-            X = A @ Wd[g]
+            # the reconstruction A @ Wd[g] lives in the span of the group's decoder rows: with Wd[g]^T = QR it equals
+            # (A R^T) Q^T, and Q^T keeps distances, so all geometry is computed on the small (tokens x size) matrix
+            _, Rg = np.linalg.qr(Wd[g].T)
+            X = A @ Rg.T
             coords, evf, _ = pca(X, 3)
             pr = participation(evf)
             mix = float(((A > 0).sum(1) >= 2).mean())
