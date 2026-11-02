@@ -12,7 +12,8 @@ import { join } from "node:path";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT || "playwright");
 const [site, out, hub] = process.argv.slice(2);
-const q = hub ? `?hub=${encodeURIComponent(hub)}` : "";
+// probe / previews: how many neurons the topic search pushes and previews (a software GPU is slow; the app tests 36)
+const q = `?probe=${process.env.PROBE || 3}&previews=${process.env.PREVIEWS || 2}` + (hub ? `&hub=${encodeURIComponent(hub)}` : "");
 const only = (process.env.STEPS || "").split(",").filter(Boolean);
 const results = [], errors = [];
 const t0 = Date.now();
@@ -199,8 +200,31 @@ await step("new neuron: offers the last question again", async () => {
   await stopRun();
 });
 
-await step("find: neurons for your words, per word, filter, open one", async () => {
+await step("find › steer toward a topic: tested by pushing, story previews, open one", async () => {
   await xtab("find");
+  expect(await visible("#f-goal"), "Steer toward is not the default Find mode");
+  await type("#goal-text", "the ocean");
+  await page.keyboard.press("Enter");
+  await until(() => document.querySelectorAll("#goal-words span:not(.lab)").length >= 3, null, 0);
+  const looking = await page.$$eval("#goal-words span:not(.lab)", l => l.map(x => x.textContent));
+  expect(looking.some(w => /sea|ocean/i.test(w)), "topic words: " + looking);
+  await until(() => /Tested \d+ neurons/.test(document.getElementById("goal-note").textContent) || /No neuron/.test(document.getElementById("goal-rows").textContent), null, 0);
+  const rows = await page.$$eval("#goal-rows li[data-i]", l => l.map(x => x.innerText.replace(/\s+/g, " ")));
+  expect(rows.length >= 1, "no results: " + await text("#goal-rows"));
+  expect(await page.$("#goal-rows .pv:not(.wait)"), "no story preview");
+  await page.screenshot({ path: `${out}/steer-toward.png` });
+  const rec = await page.$eval("#goal-rows li[data-i] .r", e => e.textContent.split("·")[1].trim());
+  await tap("#goal-rows li[data-i]");
+  await until(() => /Steering toward “the ocean”/.test(document.getElementById("asked").textContent), null, 10000);
+  expect((await text("#strength-v")) === rec, `strength ${await text("#strength-v")} vs recommended ${rec}`);
+  await answered(8);
+  await stopRun();
+  return rows[0].slice(0, 150) + " | steered: " + JSON.stringify((await answers())[0].slice(0, 50));
+});
+
+await step("find › reacts to: neurons for your words, per word, filter, open one", async () => {
+  await xtab("find");
+  await tap('#find-mode button[data-f="text"]');
   await type("#find-text", "Paris is the capital of France.");
   await tap("#find-go");
   await until(() => document.querySelectorAll("#find-rows li[data-l]").length >= 10, null, 0);

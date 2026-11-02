@@ -321,3 +321,26 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   for (var r = 0u; r < p.R; r++) { let v = q4(w[r * K4 + kw]) * sc[r * G + (kw >> 5u)]; acc += v * v; }
   y[kw] = sqrt(acc);
 }`;
+
+// Row norms of W[R, K]: y[r] = |W[r, :]|. One thread per row.
+export const rowNorms = /* wgsl */ `
+struct P { R: u32, K: u32, pad0: u32, pad1: u32 };
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> w: array<vec4<u32>>;
+@group(0) @binding(2) var<storage, read> sc: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<f32>;
+${unpack}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nw: vec3<u32>) {
+  let r = gid.x + gid.y * nw.x * 64u;
+  if (r >= p.R) { return; }
+  let K16 = p.K >> 4u;
+  var acc = 0.0;
+  for (var k = 0u; k < K16; k++) {
+    let wv = w[r * K16 + k];
+    let s = sc[r * (p.K >> 7u) + (k >> 3u)];
+    let a = q4(wv.x) * s; let b = q4(wv.y) * s; let c = q4(wv.z) * s; let d = q4(wv.w) * s;
+    acc += dot(a, a) + dot(b, b) + dot(c, c) + dot(d, d);
+  }
+  y[r] = sqrt(acc);
+}`;

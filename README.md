@@ -12,8 +12,10 @@ Every MLP neuron (24 layers × 3,584) can be turned up or down while the model a
   layer), suggested questions, stop at any time. Switching neurons offers to ask the last question again, so the same
   question can be compared across neurons.
 - **Explore** (choose and understand):
-  - **Find**: type any text; see the neurons that react most to it (scored against each neuron's range on a small
-    built-in corpus, measured once in the background), tap a word for just that word's neurons.
+  - **Find › Steer toward**: name a topic; get neurons that actually steer the model toward it, each with a
+    recommended strength and the start of a test story written with it (see below).
+  - **Find › Reacts to**: type any text; see the neurons that fire most on it (scored against each neuron's range on
+    a small built-in corpus, measured once in the background), tap a word for just that word's neurons.
   - **Neuron**: the words boosting or suppressing it favors (logit lens), a name, and behind collapsed sections:
     where it fires in sample texts, how it reacts to your own text, its effect on the next word (steer lens), its
     connected neurons (direct path through the weights), and advanced options (multiply instead of push, keep a
@@ -24,6 +26,31 @@ Every MLP neuron (24 layers × 3,584) can be turned up or down while the model a
 First visit: a three-step welcome and one button (download, 1.5 GB once). After loading: **Try an example** (a
 neuron whose push visibly changes answers), **Find neurons in your own words**, or **Surprise me**. `#L12N1234` links
 open a neuron; names and saved neurons stay in the browser.
+
+## Finding neurons that steer
+
+Firing is the wrong signal for steering. For "the ocean", the neurons that fire hardest on the word (L0 N56, L1 N2,
+L3 N0, L5 N8) barely move the model when pushed: their stories mention nothing of the sea. Find › Steer toward
+looks at what neurons *write* and then tests it (`engine/analysis.js`, reference in `tools/find_steering.py`):
+
+1. **Topic words**: the topic plus its nearest whole words in the model's own embedding space (tied with the
+   unembedding), up to 64, weighted by similarity.
+2. **Shortlist from the weights**: every neuron's down column, read through the final norm and unembedding, scored by
+   how much it favors those words over the average word; z-scored per layer, best 3 per band of 4 layers and sign
+   (36 candidates out of 86,016).
+3. **Push test**: each candidate pushed at 0.8 in two short sentences that end where a topic word could follow
+   (three candidates per batch, one per row). Measured: probability mass and log-odds moved onto the topic words,
+   and KL (how much everything else moves). Large-KL pushes derail into repetition, so each result gets a
+   recommended strength aiming for KL about 0.8 (KL grows about with the square of the dose).
+4. **Story preview**: the best six start a short story at their recommended strength; distinct words near the
+   topic are counted and repetition is flagged. Fluent, on-topic previews rank first.
+
+For "the ocean" the shortlist ranks L23 N179, L21 N3399 and L20 N1880 first of 86,016; at their recommended
+strengths (0.24 / 0.77 / 0.46) they write "The rain in Seattle didn't wash things clean; it just made the ocean
+sea…", "The sea did not roar at sea; it simply held its own…", "The ocean was not a sea, but a river of deep,
+oceanic blue…" (on this engine; PyTorch gives the same numbers within int8 error). At 0.8 two of them collapse into
+"Sea Sea Sea" / "Ocean Lake Ocean Lake", which is why the strength is recommended per neuron. Harder topics give
+fewer good results ("cooking food": two of five previews on topic), and the previews show which.
 
 ## How it runs on the phone
 
@@ -80,6 +107,7 @@ node tests/smoke.mjs <served url> <hub mirror url>                       # every
 node tests/keyboard.mjs <served url>                                     # text fields keep focus when the keyboard opens
 SMALL_CORPUS=1 node tests/e2e.mjs <site url> <out dir>                   # end-user run of every feature on the deployed site
 node tests/profile.mjs <served url> <hub mirror url>                     # time per kernel type
+node tests/steerfind.mjs <served url> <hub mirror url> [topic=music]     # topic search on the WebGPU engine vs tools/find_steering.py
 node tests/screens.mjs <served url> <hub mirror url> <out dir>           # screenshots at iPhone Duo viewport sizes
 ```
 

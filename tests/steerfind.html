@@ -1,0 +1,79 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>steer-toward check</title>
+<pre id="log"></pre>
+<script type="module">
+// Loaded by tests/steerfind.mjs. Checks the topic search on the WebGPU engine: batched multi-row prefill equals
+// single-row prefill (with a different push per row), then concept / shortlist / probe / preview for "the ocean",
+// to compare with the PyTorch prototype in tools/find_steering.py.
+import { Model, setHubBase } from "../engine/model.js";
+import { Tokenizer } from "../engine/tokenizer.js";
+import { Explorer } from "../engine/analysis.js";
+const q = new URLSearchParams(location.search);
+const log = (...a) => { document.getElementById("log").textContent += a.join(" ") + "\n"; console.log(...a); };
+window.__done = false;
+try {
+  const hub = q.get("hub"); setHubBase(hub);
+  const tok = await Tokenizer.fromUrl(`${hub}/Qwen/Qwen3.5-0.8B/resolve/main/tokenizer.json`);
+  const m = await Model.load("Qwen/Qwen3.5-0.8B", { cache: false });
+  m.alloc(3, 256, 64);
+  const ex = new Explorer(m, tok);
+  let t0 = performance.now();
+  await ex.init(); await ex.writeNorms();
+  log("init", ((performance.now() - t0) / 1000).toFixed(0), "s");
+  if (!q.has("only")) {
+  // 1. batched rows == single rows, each row with its own push
+  const ids = tok.encode("My favorite thing in the world is", { special: false });
+  const unit = (l, n) => ex.residP50[l] / ex.colNorm.get(l * 1e6 + n);
+  const pushes = { 21: [{ n: 3399, mode: "add", vals: [0.8 * unit(21, 3399), 0, 0, 0] }], 20: [{ n: 1880, mode: "add", vals: [0, -0.8 * unit(20, 1880), 0, 0] }] };
+  for (let r = 0; r < 3; r++) m.reset(r);
+  m._forward([...ids, ...ids, ...ids], 0, 3, ids.length, { pushes }); m._logits(3);
+  const batched = new Float32Array(await m.gpu.read(m.st.logits, 3 * m.V * 4));
+  let worst = 0;
+  for (let r = 0; r < 3; r++) {
+    m.reset(r); m.prefill(r, ids, { pushes });
+    const single = await m.logitsRow(r);
+    for (let i = 0; i < m.V; i += 97) worst = Math.max(worst, Math.abs(single[i] - batched[r * m.V + i]));
+  }
+  log("batched vs single-row prefill, max |logit diff|:", worst.toExponential(2));
+  // 2. concept, shortlist
+  t0 = performance.now();
+  const c = await ex.concept("the ocean");
+  log("concept", ((performance.now() - t0) / 1000).toFixed(0), "s:", c.targets.map(t => JSON.stringify(t.text)).join(" "));
+  t0 = performance.now();
+  const sl = await ex.shortlist(c);
+  const has = (l, n, s) => sl.some(x => x.layer === l && x.n === n && x.sign === s);
+  log("shortlist", ((performance.now() - t0) / 1000).toFixed(0), "s:", sl.length, "candidates; has L21N3399+", has(21, 3399, 1), "L20N1880-", has(20, 1880, -1), "L23N179-", has(23, 179, -1));
+  log("  top by z:", sl.sort((a, b) => b.z - a.z).slice(0, 8).map(x => `L${x.layer}N${x.n}${x.sign > 0 ? "+" : "-"}(${x.z.toFixed(1)})`).join(" "));
+  // 3. probe known neurons (prototype, float32: L21N3399+ gain 6.32 kl 0.89; L20N1880- 7.76 / 2.55; L23N179- 8.65 / 8.58; naive L0N56- 0.24 / 0.35)
+  t0 = performance.now();
+  const known = [{ layer: 21, n: 3399, sign: 1 }, { layer: 20, n: 1880, sign: -1 }, { layer: 23, n: 179, sign: -1 }, { layer: 0, n: 56, sign: -1 }];
+  const pr = await ex.probe(known, c);
+  log("probe", ((performance.now() - t0) / 1000).toFixed(0), "s");
+  for (const r of pr) log(`  L${r.layer}N${r.n}${r.sign > 0 ? "+" : "-"} gain ${r.gain.toFixed(2)} dp ${r.dp.toFixed(3)} kl ${r.kl.toFixed(2)} rec ${r.rec} adds ${r.adds.join(" ")}`);
+  if (!q.has("noprev")) {
+  // 4. preview for the top three
+  t0 = performance.now();
+  await ex.preview(pr.slice(0, 3), c, { maxNew: +(q.get("new") || 20) });
+  log("preview", ((performance.now() - t0) / 1000).toFixed(0), "s");
+  for (const r of pr.slice(0, 3)) log(`  L${r.layer}N${r.n} @${r.rec} hits ${r.hits} repeats ${r.repeats.toFixed(2)}: ${JSON.stringify(r.preview)}`);
+  }
+  }
+  // 5. the whole search as the app runs it, for ?topic= (shortlist -> probe the top ?probe= by z -> preview the best 3)
+  const topic = q.get("topic");
+  if (topic) {
+    t0 = performance.now();
+    const c2 = await ex.concept(topic);
+    log(`[${topic}] looking for:`, c2.display.join(" "), `| ${c2.targets.length} weighted targets`);
+    const cands = (await ex.shortlist(c2)).sort((a, b) => b.z - a.z).slice(0, +(q.get("probe") || 6));
+    const res = await ex.probe(cands, c2);
+    const good = res.filter(r => r.gain > 0.3 && r.dp > 1e-4).slice(0, 3);
+    await ex.preview(good, c2, { maxNew: +(q.get("new") || 20) });
+    log(`[${topic}] search ${((performance.now() - t0) / 1000).toFixed(0)} s`);
+    for (const r of res) log(`  L${r.layer}N${r.n}${r.sign > 0 ? "+" : "-"} gain ${r.gain.toFixed(2)} kl ${r.kl.toFixed(2)} rec ${r.rec} adds ${r.adds.join(" ")}` +
+      (r.preview != null ? ` | hits ${r.hits} repeats ${r.repeats.toFixed(2)}: ${JSON.stringify(r.preview)}` : ""));
+  }
+  window.__ok = true;
+} catch (e) { log("ERROR", e.stack || e); }
+window.__done = true;
+</script>

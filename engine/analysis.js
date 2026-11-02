@@ -343,6 +343,242 @@ export class Explorer {
     return this._wn;
   }
 
+  // ---------- finding neurons that steer toward a topic ----------
+  //
+  // Activation is the wrong signal for steering: a neuron that fires on "ocean" often does nothing to what the model
+  // says when pushed. This search looks at the write side and then measures it:
+  //   1. concept   the topic's words plus their nearest neighbours in the model's own embedding space (tied with
+  //                the unembedding), whole words only
+  //   2. shortlist every neuron's down column, read through the final norm and unembedding, scored by how much it
+  //                favors those words over the average word (direction only: a push's size in residual units is
+  //                fixed by the dose); z-scored per layer and taken per band of layers, both signs
+  //   3. probe     each candidate actually pushed (0.8) in two short contexts that end where a topic word could
+  //                come next; measured: probability mass gained by the topic words, their log-odds gain, and KL
+  //                (how much everything else moves). Pushes with large KL derail into repetition, so each result
+  //                gets a recommended strength that aims for a moderate KL (KL grows about with dose squared)
+  //   4. preview   the best few write the start of a short story at their recommended strength
+
+  async _vocabStats() {  // (under the lock) |E row| per token and the vocab-mean of E * (1 + final norm weight)
+    if (this._vstats) return this._vstats;
+    const m = this.m, g = this.g, E = m.embed, V = m.V, H = m.H;
+    const norms = g.buffer(V * 4, "enorm");
+    const wgs = Math.ceil(V / 64), sx = Math.min(wgs, 65535);
+    g.run("rownorms", K.rowNorms, [E.w, E.s, norms], [sx, Math.ceil(wgs / sx)], [V, H, 0, 0]);
+    const ones = g.buffer(V * 4, "invV");
+    g.write(ones, new Float32Array(V).fill(1 / V));
+    g.run("mvT", K.matvecT, [ones, E.w, E.s, this.b.vec], Math.ceil(H / 4 / 64), [V, H, 0, 0]);
+    const n = new Float32Array(await g.read(norms));
+    const mean = new Float32Array(await g.read(this.b.vec, H * 4));
+    g.free(norms); g.free(ones);
+    const gain = Float32Array.from(m.finalNorm, w => 1 + w);
+    for (let i = 0; i < H; i++) mean[i] *= gain[i];
+    return (this._vstats = { norms: n, mean, gain });
+  }
+
+  async _rows(ids) {  // (under the lock) dequantized embedding rows -> Float32Array [ids.length, H]
+    const m = this.m, g = this.g, H = m.H;
+    const idb = g.buffer(ids.length * 4, "rowids"), out = g.buffer(ids.length * H * 4, "rows");
+    g.write(idb, Uint32Array.from(ids));
+    g.run("gather", K.gather, [idb, m.embed.w, m.embed.s, out], ids.length, [ids.length, H, F(1), 0]);
+    const r = new Float32Array(await g.read(out));
+    g.free(idb); g.free(out);
+    return r;
+  }
+
+  // Topic -> {words, q (unit vector in embedding space), targets: [{id, w, text, cos}] (up to 64 whole-word tokens,
+  // weighted by similarity), display (a few distinct ones in the topic's script)}, or null when nothing usable.
+  async concept(text, { max = 64 } = {}) {
+    const tok = this.tok;
+    const words = (text.toLowerCase().match(/[\p{L}\p{N}']+/gu) || []).filter(w => !STOP.has(w));
+    const qids = new Set();
+    for (const w of words.length ? words : [text.trim().toLowerCase()]) {
+      for (const v of [" " + w, w, " " + cap(w), cap(w)]) {
+        const ids = tok.encode(v, { special: false });
+        if (ids.length === 1 || (ids.length && tok.piece(ids[0]).trim().length >= 3)) qids.add(ids[0]);
+      }
+    }
+    if (!qids.size) return null;
+    return this.lock(async () => {
+      const m = this.m, g = this.g, H = m.H, V = m.V, st = m.st;
+      const vs = await this._vocabStats();
+      const q0 = [...qids];
+      const rows = await this._rows(q0);
+      const q = new Float32Array(H);
+      q0.forEach((id, i) => { const nn = vs.norms[id] || 1; for (let k = 0; k < H; k++) q[k] += rows[i * H + k] / nn; });
+      const qn = Math.hypot(...q) || 1;
+      for (let k = 0; k < H; k++) q[k] /= qn;
+      g.write(this.b.vec, q);
+      m._mm(this.b.vec, m.embed, st.logits, 1);
+      const sim = new Float32Array(await g.read(st.logits, V * 4));
+      for (let i = 0; i < V; i++) sim[i] /= vs.norms[i] || 1;
+      const top = partialTop(sim, 400, 1);
+      const targets = new Map(q0.map(id => [id, 1]));  // the topic's own tokens
+      const s0 = sim[top[0]];
+      for (const id of top) {
+        if (targets.size >= max || sim[id] < RELATED) break;
+        if (targets.has(id) || !wordlike(tok.piece(id))) continue;
+        targets.set(id, Math.max(0.05, (sim[id] - 0.2) / (s0 - 0.2)));
+      }
+      const list = [...targets].map(([id, w]) => ({ id, w, text: tok.piece(id), cos: sim[id] }));
+      const latin = /\p{Script=Latin}/u.test(text);
+      // shown to the user: distinct words (one per 4-letter stem, so not nine spellings of "music"), topic's script
+      const seen = new Set(), display = [];
+      for (const t of [...list].sort((x, y) => y.cos - x.cos)) {
+        const k = t.text.trim().toLowerCase().slice(0, 4);
+        if (seen.has(k) || (latin && !/^\s?\p{Script=Latin}+$/u.test(t.text))) continue;
+        seen.add(k); display.push(t.text.trim().toLowerCase());
+      }
+      return { words, q, targets: list, display: display.slice(0, 10) };
+    });
+  }
+
+  // Candidates from the weights: [{layer, n, sign, z}] (sign +1: boosting favors the topic, -1: suppressing does).
+  async shortlist(concept, { perBand = 3, bands = 6 } = {}) {
+    await this.writeNorms();
+    return this.lock(async () => {
+      const m = this.m, g = this.g, H = m.H, I = m.I, L = m.L;
+      const vs = await this._vocabStats();
+      const ids = concept.targets.map(t => t.id), w = concept.targets.map(t => t.w);
+      const rows = await this._rows(ids);
+      const u = new Float32Array(H), W = w.reduce((a, b) => a + b, 0);
+      ids.forEach((_, i) => { for (let k = 0; k < H; k++) u[k] += w[i] * rows[i * H + k] * vs.gain[k] / W; });
+      for (let k = 0; k < H; k++) u[k] -= vs.mean[k];
+      g.write(this.b.vec, u);
+      for (let l = 0; l < L; l++) {
+        const D = m.layers[l].down;
+        g.run("mvT", K.matvecT, [this.b.vec, D.w, D.s, { buffer: this.b.out, offset: l * I * 4, size: I * 4 }], Math.ceil(I / 4 / 64), [H, I, 0, 0]);
+      }
+      const a = new Float32Array(await g.read(this.b.out, L * I * 4));
+      const z = new Float32Array(L * I);
+      for (let l = 0; l < L; l++) {
+        let mu = 0, sd = 0;
+        for (let n = 0; n < I; n++) { const v = a[l * I + n] / (this.colNorm.get(l * 1e6 + n) || 1); a[l * I + n] = v; mu += v; }
+        mu /= I;
+        for (let n = 0; n < I; n++) sd += (a[l * I + n] - mu) ** 2;
+        sd = Math.sqrt(sd / I) || 1;
+        for (let n = 0; n < I; n++) z[l * I + n] = (a[l * I + n] - mu) / sd;
+      }
+      const out = [], per = Math.ceil(L / bands);
+      for (let b0 = 0; b0 < L; b0 += per) {
+        const lo = b0 * I, hi = Math.min(L, b0 + per) * I, band = z.subarray(lo, hi);
+        for (const sign of [1, -1]) {
+          for (const i of partialTop(band, perBand, sign)) out.push({ layer: Math.floor((lo + i) / I), n: (lo + i) % I, sign, z: sign * band[i] });
+        }
+      }
+      return out;
+    });
+  }
+
+  // Pushes each candidate (rows of one batch, three at a time) in short contexts and measures what happens to the
+  // topic's words. Adds to each candidate: dp (probability mass gained), gain (log-odds), kl, rec (recommended
+  // strength), adds (top words it raises), score. Sorted by score.
+  async probe(cands, concept, { dose = 0.8, onProgress = () => {}, cancel = { stop: false } } = {}) {
+    const m = this.m, tok = this.tok, V = m.V;
+    await this.init();
+    const tid = concept.targets.map(t => t.id), lw = concept.targets.map(t => Math.log(t.w));
+    const ctxs = PROBE_CONTEXTS.map(c => tok.encode(c, { special: false }));
+    const base = [];
+    const acc = cands.map(() => ({ dp: 0, gain: 0, kl: 0, d: null }));
+    const jobs = [];
+    ctxs.forEach((ids, c) => { jobs.push({ c, k: -1 }); cands.forEach((_, k) => jobs.push({ c, k })); });
+    let done = 0;
+    for (let j = 0; j < jobs.length && !cancel.stop; j += 3) {
+      const group = jobs.slice(j, j + 3).filter(x => x.c === jobs[j].c);  // one context per batch (same length)
+      j -= 3 - group.length;
+      const ids = ctxs[group[0].c];
+      const lps = await this.lock(async () => {
+        const pushes = {};
+        group.forEach((x, r) => {
+          if (x.k < 0) return;
+          const cd = cands[x.k], v = cd.sign * dose * this.residP50[cd.layer] / (this.colNorm.get(cd.layer * 1e6 + cd.n) || 1);
+          const vals = [0, 0, 0, 0]; vals[r] = v;
+          (pushes[cd.layer] ||= []).push({ n: cd.n, mode: "add", vals });
+        });
+        if (Object.values(pushes).some(p => p.length > 8)) throw new Error("too many pushes in one layer");
+        for (let r = 0; r < 3; r++) m.reset(r);
+        const all = [];
+        for (let r = 0; r < 3; r++) all.push(...ids);
+        m._forward(all, 0, 3, ids.length, { pushes });
+        m._logits(3);
+        const lg = new Float32Array(await m.gpu.read(m.st.logits, 3 * V * 4));
+        for (let r = 0; r < 3; r++) m.reset(r);
+        return group.map((_, r) => logSoftmax(lg.subarray(r * V, (r + 1) * V)));
+      });
+      group.forEach((x, r) => {
+        const lp = lps[r];
+        if (x.k < 0) { base[x.c] = lp; return; }
+        const b = base[x.c], a = acc[x.k];
+        let mass = 0, mb = 0;
+        const t = tid.map((id, i) => { mass += Math.exp(lp[id]); mb += Math.exp(b[id]); return lp[id] + lw[i]; });
+        const tb = tid.map((id, i) => b[id] + lw[i]);
+        a.dp += (mass - mb) / ctxs.length;
+        a.gain += (lse(t) - lse(tb)) / ctxs.length;
+        a.kl += kl(lp, b) / ctxs.length;
+        if (!a.d) a.d = new Float32Array(V);
+        for (let i = 0; i < V; i++) a.d[i] += lp[i] - b[i];
+        done++;
+        onProgress({ done, total: cands.length * ctxs.length });
+      });
+    }
+    if (cancel.stop) return null;
+    const out = cands.map((cd, k) => {
+      const a = acc[k];
+      const adds = partialTop(a.d, 60, 1).filter(i => wordlike(tok.piece(i))).slice(0, 6).map(i => tok.piece(i));
+      const rec = Math.min(1.2, Math.max(0.1, dose * Math.sqrt(0.8 / Math.max(a.kl, 1e-6))));  // aim for KL about 0.8
+      const score = a.dp * (a.kl < 2.5 ? 1 : 0.5) + 0.02 * a.gain;
+      return { ...cd, dp: a.dp, gain: a.gain, kl: a.kl, rec: +rec.toFixed(2), adds, score };
+    });
+    return out.sort((x, y) => y.score - x.score);
+  }
+
+  // The start of a short story with each result pushed at its recommended strength (three per batch). Adds
+  // preview (text), hits (distinct words in it that are close to the topic in embedding space) and repeats (share of
+  // repeated word pairs) to each.
+  async preview(results, concept, { prompt = "Tell me a short story.", maxNew = 32, onProgress = () => {}, cancel = { stop: false } } = {}) {
+    const m = this.m, tok = this.tok;
+    const ids = tok.encode(tok.chat([{ role: "user", content: prompt }]));
+    for (let j = 0; j < results.length && !cancel.stop; j += 3) {
+      const group = results.slice(j, j + 3);
+      const texts = await this.lock(async () => {
+        const pushes = {};
+        group.forEach((cd, r) => {
+          const v = cd.sign * cd.rec * this.residP50[cd.layer] / (this.colNorm.get(cd.layer * 1e6 + cd.n) || 1);
+          const vals = [0, 0, 0, 0]; vals[r] = v;
+          (pushes[cd.layer] ||= []).push({ n: cd.n, mode: "add", vals });
+        });
+        for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, ids, { pushes }); }
+        const out = [[], [], []], fin = [false, false, false];
+        for (let s = 0; s < maxNew && !cancel.stop; s++) {
+          const nx = await m.argmaxAll();
+          nx.forEach((t, r) => { if (t === this.eos) fin[r] = true; else if (!fin[r]) out[r].push(t); });
+          if (fin.every(Boolean)) break;
+          m.step(nx, { pushes });
+        }
+        for (let r = 0; r < 3; r++) m.reset(r);
+        // which generated words sit near the topic: cosine of their embedding with the topic vector
+        const uniq = [...new Set(out.flat())].filter(id => wordlike(tok.piece(id)));
+        const near = new Set();
+        if (uniq.length) {
+          const vs = await this._vocabStats(), rows = await this._rows(uniq), H = m.H;
+          uniq.forEach((id, i) => {
+            let d = 0; for (let k = 0; k < H; k++) d += rows[i * H + k] * concept.q[k];
+            if (d / (vs.norms[id] || 1) >= RELATED) near.add(id);
+          });
+        }
+        return out.map(o => ({ text: tok.decode(o).trim(), hits: new Set(o.filter(id => near.has(id))).size }));
+      });
+      group.forEach((cd, r) => {
+        const { text, hits } = texts[r], w = text.toLowerCase().match(/[\p{L}\p{N}']+/gu) || [];
+        const pairs = w.slice(1).map((x, i) => w[i] + " " + x);
+        cd.preview = text;
+        cd.hits = hits;
+        cd.repeats = pairs.length ? 1 - new Set(pairs).size / pairs.length : 0;
+        onProgress({ done: j + r + 1, total: results.length, item: cd });
+      });
+    }
+    return results;
+  }
+
   // ---------- calibration ----------
 
   // Runs a corpus through the model in chunks (each its own sequence; position 0, the attention sink, is skipped) and
@@ -409,6 +645,17 @@ export class Explorer {
 }
 
 // ---------- helpers ----------
+
+const STOP = new Set("the a an of to and or in on at for about with more less be is are sound sounds like talk talks make makes model it its that this some any very".split(" "));
+const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
+// a whole word: " word" (word-initial piece), "Word" (capitalized, sentence start), or a run of CJK characters
+const wordlike = s => /^ \p{L}[\p{L}'-]+$/u.test(s) || /^\p{Lu}\p{Ll}+$/u.test(s) || /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u.test(s);
+const lse = a => { let mx = -Infinity; for (const v of a) if (v > mx) mx = v; let s = 0; for (const v of a) s += Math.exp(v - mx); return mx + Math.log(s); };
+// short contexts that end where a topic word could come next (plain text, no chat template)
+const PROBE_CONTEXTS = ["My favorite thing in the world is", "Today I want to tell you about"];
+// embedding cosine above which a word counts as related to the topic (sea~ocean 0.45, boat 0.25, song~music 0.40,
+// kitchen~cooking 0.42; unrelated city 0.10-0.15, rain 0.06-0.20, the ~0)
+const RELATED = 0.22;
 
 function insertTop(arr, i, item, keep, cmp) {
   const l = arr[i] || (arr[i] = []);

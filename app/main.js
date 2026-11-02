@@ -249,7 +249,7 @@ function renderEmpty() {
       `<button id="surprise" class="link" type="button">Try another neuron</button>`;
   }
   $("#try-example")?.addEventListener("click", tryExample);
-  $("#go-find")?.addEventListener("click", () => { setXTab("find"); if (narrow()) setPane("explore"); setTimeout(() => $("#find-text").focus(), 50); });
+  $("#go-find")?.addEventListener("click", () => { setXTab("find"); setFindMode("goal"); if (narrow()) setPane("explore"); setTimeout(() => $("#goal-text").focus(), 50); });
   $("#surprise")?.addEventListener("click", surprise);
   $("#ask-again")?.addEventListener("click", () => ask(state.lastQ));
 }
@@ -261,14 +261,14 @@ function renderSuggest() {
 }
 $("#suggest").addEventListener("click", e => { const b = e.target.closest("button"); if (b) ask(b.textContent); });
 
-let exampleIdx = 0, exampleHint = null;
+let exampleIdx = 0, exampleHint = null;  // {layer, n, prompt, hint}: a line under the question saying where to look
 function tryExample() {
   const x = EXAMPLES[exampleIdx++ % EXAMPLES.length];
   state.mode = "add";
   state.dose.add = x.dose ?? 0.8;
   renderStrength();
   openNeuron(x.layer, x.n, { go: "steer" });
-  exampleHint = { layer: x.layer, n: x.n, prompt: x.prompt, hint: x.hint };
+  exampleHint = { layer: x.layer, n: x.n, prompt: x.prompt, hint: "Example · " + x.hint };
   ask(x.prompt);
 }
 
@@ -322,7 +322,7 @@ function renderLanes() {
   const keep = state.keep;
   const asked = rows[0].length ? rows[0][rows[0].length - 2].content : null;
   const f = state.focus, h = exampleHint;
-  const hint = h && f && h.layer === f.layer && h.n === f.n && h.prompt === asked ? ` <span class="ex">Example · ${esc(h.hint)}</span>` : "";
+  const hint = h && f && h.layer === f.layer && h.n === f.n && h.prompt === asked ? ` <span class="ex">${esc(h.hint)}</span>` : "";
   $("#asked").innerHTML = !keep && asked ? `You asked <b>${esc(asked)}</b>${hint}` : "";
   $$(".lane").forEach((lane, r) => {
     const msgs = rows[r], say = lane.querySelector(".say");
@@ -532,7 +532,96 @@ function renderTech() {
     (isFinite(unit) ? `strength 1 adds ${unit.toFixed(2)} to the activation · ` : "") + `GPU memory ${(model.gpu.bytes / 1e6).toFixed(0)} MB`;
 }
 
-// ---------- explore: find ----------
+// ---------- explore: find › steer toward a topic ----------
+
+const PROBE = +(Q.get("probe") || 36);  // candidates tested by pushing (tests on a software GPU lower it)
+const PREVIEWS = +(Q.get("previews") || 6);
+let goalJob = null;  // {cancel} of the running topic search
+
+function setFindMode(f) {
+  $$("#find-mode button").forEach(b => b.classList.toggle("on", b.dataset.f === f));
+  $("#f-goal").hidden = f !== "goal";
+  $("#f-text").hidden = f !== "text";
+}
+$$("#find-mode button").forEach(b => (b.onclick = () => setFindMode(b.dataset.f)));
+
+const effect = r => r.kl < 0.15 ? "gentle" : r.kl < 0.8 ? "clear" : r.kl < 2.5 ? "strong" : "very strong";
+function goalRow(r, i) {
+  const dir = r.sign > 0 ? "▲ boost" : "▼ suppress";
+  const times = Math.exp(r.gain);
+  const pv = r.preview == null ? (i < PREVIEWS ? `<span class="pv wait">writing a test story…</span>` : "")
+    : `<span class="pv">“${esc(r.preview.slice(0, 160))}${r.preview.length > 160 ? "…" : ""}”</span>`;
+  const flags = r.preview == null ? "" : r.repeats > 0.35 ? ` · <span class="warn">repeats itself</span>` : r.hits ? ` · <span class="good">on topic</span>` : "";
+  return `<li data-l="${r.layer}" data-n="${r.n}" data-i="${i}">
+    <span class="t"><b>${esc(label(r.layer, r.n))}</b><span class="dim">layer ${r.layer}</span><span class="r ${r.sign > 0 ? "up" : "down"}">${dir} · ${r.rec}</span></span>
+    <span class="m">topic words ${times >= 10 ? Math.round(times) : times.toFixed(1)}× likelier · ${effect(r)} effect${flags}</span>
+    <span class="w">adds ${esc(r.adds.map(show).join("  ") || "—")}</span>${pv}</li>`;
+}
+
+let goalResults = [], goalConcept = null, goalQuery = "";
+function renderGoal() {
+  const good = goalResults.filter(r => r.gain > 0.3 && r.dp > 1e-4);
+  $("#goal-rows").innerHTML = good.length ? good.map(goalRow).join("")
+    : goalResults.length ? `<li class="none">No neuron clearly pushes toward this. Try a more concrete word (a thing or a place), or another phrasing.</li>` : "";
+}
+
+$("#goal-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!ex) return;
+  const text = $("#goal-text").value.trim();
+  if (!text) { $("#goal-text").focus(); return; }
+  $("#goal-text").blur();
+  if (goalJob) goalJob.cancel.stop = true;
+  const cancel = { stop: false }, me = (goalJob = { cancel });
+  const note = m => { if (goalJob === me) $("#goal-note").textContent = m; };
+  goalResults = []; goalQuery = text;
+  $("#goal-rows").innerHTML = ""; $("#goal-words").innerHTML = "";
+  try {
+    note("Collecting words for the topic…");
+    const c = await ex.concept(text);
+    if (cancel.stop) return;
+    if (!c) { note("Type a word or two, like “the ocean”."); return; }
+    goalConcept = c;
+    $("#goal-words").innerHTML = `<span class="lab">Looking for words like</span>` + c.display.map(t => `<span>${esc(t)}</span>`).join("");
+    note("Scoring all 86,016 neurons by what they write…");
+    let cands = await ex.shortlist(c);
+    cands = cands.sort((a, b) => b.z - a.z).slice(0, PROBE);
+    if (cancel.stop) return;
+    note(`Pushing the ${cands.length} best candidates…`);
+    const res = await ex.probe(cands, c, { cancel, onProgress: p => note(`Pushing the ${cands.length} best candidates… ${Math.round(100 * p.done / p.total)}%`) });
+    if (!res || cancel.stop) return;
+    goalResults = res;
+    renderGoal();
+    const top = goalResults.filter(r => r.gain > 0.3 && r.dp > 1e-4).slice(0, PREVIEWS);
+    if (!top.length) { note(""); return; }
+    note("Writing a short test story with each of the best…");
+    await ex.preview(top, c, { cancel, onProgress: p => { if (goalJob === me) { renderGoal(); note(`Writing a short test story with each of the best… ${p.done}/${p.total}`); } } });
+    if (cancel.stop) return;
+    // final order: what the test story showed first (on topic and fluent, on topic but repetitive, no topic words,
+    // not tested), then the measured effect
+    const cls = r => (r.preview == null ? -1 : r.hits ? (r.repeats > 0.35 ? 1 : 2) : 0);
+    goalResults.sort((a, b) => cls(b) - cls(a) || b.score - a.score);
+    renderGoal();
+    note(`Tested ${cands.length} neurons. Tap one to steer with it.`);
+  } catch (err) { fail("Could not search", err); note(""); }
+  finally { if (goalJob === me) goalJob = null; }
+});
+
+$("#goal-rows").addEventListener("click", e => {
+  const li = e.target.closest("li[data-i]");
+  if (!li) return;
+  const r = goalResults.filter(x => x.gain > 0.3 && x.dp > 1e-4)[+li.dataset.i];
+  if (!r) return;
+  state.mode = "add";
+  state.dose.add = r.rec;
+  renderStrength();
+  openNeuron(r.layer, r.n, { go: "steer" });
+  const prompt = "Tell me a short story.";
+  exampleHint = { layer: r.layer, n: r.n, prompt, hint: `Steering toward “${goalQuery}”: watch the ${r.sign > 0 ? "▲ boosted" : "▼ suppressed"} answer.` };
+  ask(prompt);
+});
+
+// ---------- explore: find › reacts to ----------
 
 function setFindNote() {
   const busy = calibration && !ex?.scale;
@@ -674,7 +763,7 @@ async function previewNeuron(p) {
 async function runCalibration() {
   try {
     await ex.calibrate(CORPUS, {
-      hold: () => !!job,  // steering goes first
+      hold: () => !!job || !!goalJob,  // steering and topic searches go first
       onProgress: p => {
         calFrac = p.frac;
         setFindNote();

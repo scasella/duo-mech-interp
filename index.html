@@ -30,7 +30,7 @@
         <p>You ask a question once. The model answers three times: with the neuron <b class="up">boosted</b>,
           left <b>as is</b>, and <b class="down">suppressed</b>.</p>
         <button id="try-example" class="primary" type="button">Try an example</button>
-        <button id="go-find" class="secondary" type="button">Find neurons in your own words</button>
+        <button id="go-find" class="secondary" type="button">Find a neuron for a topic</button>
         <button id="surprise" class="link" type="button">Surprise me</button>
       </div>
       <div id="lanes" hidden>
@@ -89,20 +89,42 @@
     </div>
 
     <div class="xpane on" id="x-find">
-      <form id="find-form">
-        <p class="hint">Type any text. See which neurons react to it most.</p>
-        <textarea id="find-text" rows="2" spellcheck="false" placeholder="e.g. I can't wait for the weekend!" aria-label="Text to search with"></textarea>
-        <button id="find-go" class="primary" type="submit">Find neurons</button>
-      </form>
-      <p id="find-note" class="fine"></p>
-      <div id="find-toks" class="toks"></div>
-      <ol id="find-rows" class="list"></ol>
-      <details id="find-filters" hidden><summary>Filters</summary>
-        <div class="more">
-          <div class="opt"><span>Reacts</span><span class="seg small" id="find-sign"><button type="button" data-s="both" class="on">either way</button><button type="button" data-s="+">up</button><button type="button" data-s="-">down</button></span></div>
-          <div class="opt"><span>Layers</span><span><input id="find-lo" class="num" value="0" inputmode="numeric" aria-label="from layer"> to <input id="find-hi" class="num" value="23" inputmode="numeric" aria-label="to layer"></span></div>
-        </div>
-      </details>
+      <div class="seg small wide" id="find-mode"><button type="button" data-f="goal" class="on">Steer toward</button><button type="button" data-f="text">Reacts to</button></div>
+
+      <div id="f-goal">
+        <form id="goal-form">
+          <p class="hint">Name a topic. Neurons are tested by pushing them, not by how much they fire.</p>
+          <div class="ask"><input id="goal-text" placeholder="e.g. the ocean, cooking, music" aria-label="Topic to steer toward" enterkeyhint="search"><button id="goal-go" class="send" type="submit" aria-label="Find neurons">→</button></div>
+        </form>
+        <div id="goal-words" class="words small"></div>
+        <p id="goal-note" class="fine"></p>
+        <ol id="goal-rows" class="list"></ol>
+        <details id="goal-how"><summary>How neurons are picked</summary>
+          <div class="more fine">
+            <p>1. The topic becomes a set of words the model treats as close to it (its own embedding space).</p>
+            <p>2. All 86,016 neurons are scored by how directly what they write favors those words, layer by layer.</p>
+            <p>3. The best candidates are actually pushed in two short sentences. Kept: the ones that make the topic's words more likely, ranked by how much probability moves to them. Pushes that shake everything else (high KL) tend to derail into repetition, so each gets a gentler recommended strength.</p>
+            <p>4. The top ones start a short story at that strength, so you can see the effect before choosing.</p>
+          </div>
+        </details>
+      </div>
+
+      <div id="f-text" hidden>
+        <form id="find-form">
+          <p class="hint">Type any text. See which neurons fire most on it. (Firing is not the same as steering: try Steer toward for that.)</p>
+          <textarea id="find-text" rows="2" spellcheck="false" placeholder="e.g. I can't wait for the weekend!" aria-label="Text to search with"></textarea>
+          <button id="find-go" class="primary" type="submit">Find neurons</button>
+        </form>
+        <p id="find-note" class="fine"></p>
+        <div id="find-toks" class="toks"></div>
+        <ol id="find-rows" class="list"></ol>
+        <details id="find-filters" hidden><summary>Filters</summary>
+          <div class="more">
+            <div class="opt"><span>Reacts</span><span class="seg small" id="find-sign"><button type="button" data-s="both" class="on">either way</button><button type="button" data-s="+">up</button><button type="button" data-s="-">down</button></span></div>
+            <div class="opt"><span>Layers</span><span><input id="find-lo" class="num" value="0" inputmode="numeric" aria-label="from layer"> to <input id="find-hi" class="num" value="23" inputmode="numeric" aria-label="to layer"></span></div>
+          </div>
+        </details>
+      </div>
     </div>
 
     <div class="xpane" id="x-browse">
