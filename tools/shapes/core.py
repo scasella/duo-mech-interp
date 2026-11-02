@@ -166,6 +166,49 @@ def harvest(tok, lm, saes, batches, n_tokens, n_store_seqs, out_dir, device, par
 
 
 @torch.inference_mode()
+def harvest_centroids(tok, lm, layers, batches, n_tokens, out_dir, device, min_count=20, log=print):
+    """Average residual of every vocabulary token over its occurrences in the text (one row per token that occurs
+    at least `min_count` times), per layer. Families of words whose averages form a circle or a line are searched
+    for in analyze.py words; this needs no SAE."""
+    os.makedirs(out_dir, exist_ok=True)
+    layers = sorted(layers)
+    cap = Capture(lm, layers)
+    eos = tok.convert_tokens_to_ids("<|endoftext|>")
+    V, D = lm.config.vocab_size, lm.config.hidden_size
+    sums = {L: torch.zeros(V, D, dtype=torch.float32, device=device) for L in layers}
+    cnt = torch.zeros(V, dtype=torch.float32, device=device)
+    seen, nb, t0 = 0, 0, time.time()
+    for ids in batches:
+        ids = ids.to(device)
+        lm(input_ids=ids, use_cache=False)
+        valid = torch.ones_like(ids, dtype=torch.bool)
+        valid[:, :SKIP_FIRST] = False
+        valid &= ids != eos
+        v = valid.reshape(-1)
+        t = ids.reshape(-1)[v]
+        cnt.index_add_(0, t, torch.ones(t.numel(), dtype=torch.float32, device=device))
+        for L in layers:
+            sums[L].index_add_(0, t, cap.out[L].reshape(-1, D)[v].float())
+        seen += int(v.sum()); nb += 1
+        if nb % 50 == 0 or seen >= n_tokens:
+            log(f"{seen:,} tokens  {seen / (time.time() - t0):,.0f} tok/s")
+        if seen >= n_tokens:
+            break
+    if hasattr(batches, "close"): batches.close()
+    cap.remove()
+    keep = (cnt >= min_count).nonzero().squeeze(1)
+    np.save(f"{out_dir}/word_ids.npy", keep.cpu().numpy().astype(np.int32))
+    np.save(f"{out_dir}/word_counts.npy", cnt[keep].cpu().numpy().astype(np.int64))
+    for L in layers:
+        np.save(f"{out_dir}/L{L}_word_means.npy", (sums[L][keep] / cnt[keep, None]).half().cpu().numpy())
+    meta = dict(base=BASE, layers=layers, n_tokens=seen, words=int(keep.numel()), min_count=min_count,
+                seconds=round(time.time() - t0))
+    json.dump(meta, open(f"{out_dir}/words_meta.json", "w"), indent=1)
+    log(json.dumps(meta))
+    return meta
+
+
+@torch.inference_mode()
 def top_partners(C, freq, n_tokens, k, min_count, chunk=1024):
     """For every feature, the `k` features it fires with most often relative to chance (normalised PMI),
     counting only pairs seen at least `min_count` times."""

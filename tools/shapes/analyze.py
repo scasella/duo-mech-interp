@@ -348,9 +348,126 @@ def groups(run, layers, cache, probe_run=None, min_fire=None, max_rate=0.005, co
                 print(f"  probe family {name:12s}: {len(fs)} features; best group g{best} holds {n}; ungrouped {c.get(None, 0)}")
 
 
+# ---------------------------------------------------------------- word families (no SAE)
+def null_planarity(n, d=256, trials=200, seed=0):
+    """Top-1 and top-2 variance share of n random isotropic points (centred): what a shapeless family scores."""
+    rng = np.random.default_rng(seed)
+    s1 = s2 = 0.0
+    for _ in range(trials):
+        X = rng.normal(size=(n, d)); X -= X.mean(0)
+        ev = np.linalg.svd(X, compute_uv=False) ** 2; ev /= ev.sum()
+        s1 += ev[0]; s2 += ev[:2].sum()
+    return s1 / trials, s2 / trials
+
+
+def words(run, layers, cache, min_count=50, drop_pcs=2, knn=10, max_size=40, families_out=None):
+    """Families of words whose context-averaged residuals form a low-dimensional shape. Words are linked to their
+    nearest neighbours (cosine, after removing the shared mean and the main shared axes), communities are split
+    to at most `max_size`, and each family's averages are measured: how much variance its top one and two axes
+    hold, compared with what random points of the same count would give (so 0 = no shape, 1 = a perfect line
+    or plane)."""
+    import re, networkx as nx
+    from transformers import AutoTokenizer
+    tok = AutoTokenizer.from_pretrained(core.BASE, cache_dir=cache)
+    ids, counts = np.load(f"{run}/word_ids.npy"), np.load(f"{run}/word_counts.npy")
+    texts = [tok.decode([int(i)]) for i in ids]
+    wordlike = re.compile(r"^ [A-Za-z][a-z]{2,}$|^ [A-Z][a-z]+$|^ ?[0-9]$")
+    keep = np.array([bool(wordlike.match(t)) and c >= min_count for t, c in zip(texts, counts)])
+    ids, counts = ids[keep], counts[keep]
+    labels = [t.strip() for t, k in zip(texts, keep) if k]
+    fam_of = {v: (name, i) for name, F in core.FAMILIES.items() for i, v in enumerate(F["vals"])}
+    nulls = {}
+    out = {}
+    # merge case variants (" his" / " His") and plain plurals (" brains" -> " brain") into one word, weighted by
+    # count, so capitalisation and number do not show up as "shapes"
+    lower = {w.lower() for w in labels}
+    def base(w):
+        if w in fam_of: return w
+        w = w.lower()
+        return w[:-1] if len(w) >= 5 and w.endswith("s") and not w.endswith("ss") and w[:-1] in lower else w
+    groups_ = {}
+    for r, w in enumerate(labels):
+        groups_.setdefault(base(w), []).append(r)
+    merged = list(groups_.items())
+    labels = [w for w, _ in merged]
+    wcount = np.array([counts[rows].sum() for _, rows in merged])
+    for L in layers:
+        X0 = np.load(f"{run}/L{L}_word_means.npy")[keep].astype(np.float32)
+        X = np.stack([(X0[rows] * counts[rows, None]).sum(0) / counts[rows].sum() for _, rows in merged])
+        X -= X.mean(0)
+        if drop_pcs:
+            _, _, Vt = np.linalg.svd(X[np.random.default_rng(0).choice(len(X), min(len(X), 20000), replace=False)],
+                                     full_matrices=False)
+            X -= (X @ Vt[:drop_pcs].T) @ Vt[:drop_pcs]
+        Xn = X / np.linalg.norm(X, axis=1, keepdims=True)
+        G = nx.Graph(); G.add_nodes_from(range(len(Xn)))
+        for r0 in range(0, len(Xn), 2048):
+            S = Xn[r0:r0 + 2048] @ Xn.T
+            for j in range(S.shape[0]): S[j, r0 + j] = -1
+            nb = np.argpartition(-S, knn, axis=1)[:, :knn]
+            for j in range(S.shape[0]):
+                for t in nb[j]:
+                    if S[j, t] > 0.2: G.add_edge(r0 + j, int(t), weight=float(S[j, t]))
+        fams, todo = [], [(set(c), 1.0) for c in nx.connected_components(G)]
+        while todo:
+            nodes, res = todo.pop()
+            if len(nodes) <= max_size:
+                if len(nodes) >= 4: fams.append(sorted(nodes))
+                continue
+            parts = nx.community.louvain_communities(G.subgraph(nodes), weight="weight", resolution=res, seed=0)
+            if len(parts) == 1: todo.append((nodes, res * 2)); continue
+            todo.extend((set(p), res * 1.5) for p in parts)
+        results = []
+        for fi, fam in enumerate(fams):
+            Y = X[fam]
+            coords, evf, _ = pca(Y, 3)
+            n = len(fam)
+            if n not in nulls: nulls[n] = null_planarity(n)
+            n1, n2 = nulls[n]
+            line = (evf[0] - n1) / (1 - n1)
+            plane = (evf[:2].sum() - n2) / (1 - n2)
+            words_ = [labels[i] for i in fam]
+            known = Counter(fam_of[w][0] for w in words_ if w in fam_of)
+            fam_name, fam_n = known.most_common(1)[0] if known else (None, 0)
+            order = None
+            if fam_name and fam_n >= 4:
+                F = core.FAMILIES[fam_name]
+                pos = [(fam_of[w][1], r) for r, w in enumerate(words_) if w in fam_of and fam_of[w][0] == fam_name]
+                pos.sort()
+                cent = np.stack([coords[r] for _, r in pos])
+                if F["order"] == "linear" or len(pos) == len(F["vals"]):
+                    order = order_score(cent, F["order"])
+            results.append(dict(layer=L, family=fi, n=n, line=round(float(line), 3), plane=round(float(plane), 3),
+                                pc123=[round(float(x), 3) for x in evf[:3]], words=words_,
+                                counts=[int(wcount[i]) for i in fam], known=fam_name, known_n=fam_n,
+                                order=order, xyz=[[round(float(v), 3) for v in c] for c in coords]))
+        results.sort(key=lambda r: -r["plane"])
+        out[L] = results
+        print(f"L{L}: {len(labels):,} words, {len(fams)} families of 4-{max_size}")
+        print("  most planar families of 6+ words (top-2 axes hold far more than chance):")
+        for r in [x for x in results if x["n"] >= 6][:30]:
+            kn = f"  [{r['known']} {r['known_n']}{' order ' + str(r['order'][0]) + '/' + str(r['order'][1]) if r['order'] else ''}]" if r["known"] else ""
+            print(f"    f{r['family']:4d} n {r['n']:2d} plane {r['plane']:.2f} line {r['line']:.2f}{kn} :: {' '.join(r['words'][:14])}")
+        for name in ("weekday", "month", "number", "ordinal", "color", "season", "compass"):
+            where = Counter()
+            for r in results:
+                for w in r["words"]:
+                    if fam_of.get(w, ("",))[0] == name: where[r["family"]] += 1
+            tot = sum(1 for w in labels if fam_of.get(w, ("",))[0] == name)
+            best = where.most_common(1)
+            if best:
+                r = next(x for x in results if x["family"] == best[0][0])
+                print(f"  {name:8s}: {best[0][1]}/{tot} words in f{best[0][0]} (n {r['n']}, plane {r['plane']:.2f}, "
+                      f"order {r['order']}) :: {' '.join(r['words'][:16])}")
+    json.dump({str(k): v for k, v in out.items()}, open(families_out or f"{run}/word_families.json", "w"))
+    return out
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["probes", "groups"])
+    ap.add_argument("what", choices=["probes", "groups", "words"])
+    ap.add_argument("--drop-pcs", type=int, default=2)
+    ap.add_argument("--min-count", type=int, default=50)
     ap.add_argument("--run", required=True)
     ap.add_argument("--layers", default="12")
     ap.add_argument("--cache", default=None)
@@ -359,4 +476,5 @@ if __name__ == "__main__":
     a = ap.parse_args()
     layers = [int(x) for x in a.layers.split(",")]
     if a.what == "probes": probes(a.run, layers, a.cache)
+    elif a.what == "words": words(a.run, layers, a.cache, min_count=a.min_count, drop_pcs=a.drop_pcs)
     else: groups(a.run, layers, a.cache, a.probe_run, a.min_fire)

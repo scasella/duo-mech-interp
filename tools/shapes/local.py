@@ -7,7 +7,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
 
 ap = argparse.ArgumentParser()
-ap.add_argument("what", choices=["probe", "corpus"])
+ap.add_argument("what", choices=["probe", "corpus", "words"])
 ap.add_argument("--layers", default="12")
 ap.add_argument("--out", required=True)
 ap.add_argument("--cache", default=None)
@@ -24,9 +24,12 @@ torch.set_num_threads(a.threads)
 layers = [int(x) for x in a.layers.split(",")]
 dev = "cuda" if torch.cuda.is_available() else "cpu"
 tok, lm = core.load_model(dev, torch.bfloat16, max(layers), path=a.model, cache_dir=a.cache)
-saes = {} if a.no_sae else {L: core.load_sae(L, dev, cache_dir=a.cache) for L in layers}
+saes = {} if (a.no_sae or a.what == "words") else {L: core.load_sae(L, dev, cache_dir=a.cache) for L in layers}
 if a.what == "probe":
     core.probe(tok, lm, saes, a.out, dev, layers=layers)
+elif a.what == "words":
+    batches = core.corpus_batches(tok, a.seq, a.batch, text_file=a.text_file)
+    core.harvest_centroids(tok, lm, layers, batches, a.tokens, a.out, dev, min_count=2)
 else:
     batches = core.corpus_batches(tok, a.seq, a.batch, text_file=a.text_file)
     core.harvest(tok, lm, saes, batches, a.tokens, a.store, a.out, dev)
