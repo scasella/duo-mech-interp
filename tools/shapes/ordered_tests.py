@@ -1,7 +1,7 @@
 # python tools/shapes/ordered_tests.py <words run dir> <HF cache dir or ""> <out.json>
 # Do discovered word families line up with a real-world quantity? Uses the 30M-token word averages (2B base).
-import sys, json, numpy as np
-sys.path.insert(0, "/home/user/duo-mech-interp/tools/shapes"); import core
+import os, sys, json, numpy as np
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__))); import core
 from transformers import AutoTokenizer
 run, cache = sys.argv[1], (sys.argv[2] or None)
 tok = AutoTokenizer.from_pretrained(core.BASE, cache_dir=cache)
@@ -28,6 +28,8 @@ TESTS = {
   "luck":    {"unfortunately": -1, "sadly": -1, "regrettably": -1, "unluckily": -1, "luckily": 1, "fortunately": 1, "thankfully": 1, "happily": 1},
   "intensity": {"slightly": 1, "somewhat": 2, "moderately": 3, "considerably": 4, "substantially": 4, "significantly": 4, "dramatically": 5, "drastically": 5},
 }
+CYCLIC = {"weekday": "Monday Tuesday Wednesday Thursday Friday Saturday Sunday".split(),
+          "month": "January February March April May June July August September October November December".split()}
 CITIES = {"london": (51.5, -0.1), "paris": (48.9, 2.4), "berlin": (52.5, 13.4), "madrid": (40.4, -3.7), "rome": (41.9, 12.5),
   "moscow": (55.8, 37.6), "tokyo": (35.7, 139.7), "beijing": (39.9, 116.4), "shanghai": (31.2, 121.5), "delhi": (28.6, 77.2),
   "mumbai": (19.1, 72.9), "cairo": (30.0, 31.2), "sydney": (-33.9, 151.2), "melbourne": (-37.8, 145.0), "chicago": (41.9, -87.6),
@@ -57,6 +59,19 @@ for L in (6, 12, 18):
                                            ev=[round(float(e), 3) for e in ev[:3]],
                                            xy=[[round(float(a), 3), round(float(b), 3)] for a, b in pcs[:, :2]])
         print(f"L{L:2d} {name:9s} n {len(ws):2d}  Spearman with the real quantity on PC1/2/3 {rho[0]:+.2f} {rho[1]:+.2f} {rho[2]:+.2f}  (top-2 PCs {ev[:2].sum():.0%})  missing {[w for w in d if w not in ws]}")
+    for name, vals in CYCLIC.items():                       # do the known circles come back from web text?
+        ws = [w for w in vals if vec(M, w) is not None]
+        X = np.stack([vec(M, w) for w in ws]) - gm
+        X -= X.mean(0)
+        U, S, Vt = np.linalg.svd(X, full_matrices=False)
+        pcs = X @ Vt[:2].T
+        c = pcs - pcs.mean(0); ang = np.arctan2(c[:, 1], c[:, 0]); n = len(ws)
+        rank = {v: r for r, v in enumerate(np.argsort(ang))}
+        score = sum((rank[(v + 1) % n] - rank[v]) % n in (1, n - 1) for v in range(n))
+        ev = S**2 / (S**2).sum()
+        res.setdefault(name, {})[L] = dict(words=ws, cyclic=int(score), n=n, ev=[round(float(e), 3) for e in ev[:3]],
+                                           xy=[[round(float(a), 3), round(float(b), 3)] for a, b in pcs])
+        print(f"L{L:2d} {name:9s} n {n:2d}  {score}/{n} neighbours in cyclic order (top-2 PCs {ev[:2].sum():.0%})")
     # map: leave-one-out ridge from city averages to latitude and longitude
     cs = [c for c in CITIES if vec(M, c) is not None]
     X = np.stack([vec(M, c) for c in cs]) - gm
