@@ -1,0 +1,74 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>engine test</title>
+<pre id="log"></pre>
+<script type="module">
+// Loaded by tests/engine.mjs. ?hub=<mirror base> points the loader at a local copy of the checkpoint.
+import { Model, setHubBase } from "../engine/model.js";
+import { Tokenizer } from "../engine/tokenizer.js";
+const q = new URLSearchParams(location.search);
+const log = (...a) => { document.getElementById("log").textContent += a.join(" ") + "\n"; console.log(...a); };
+window.__done = false;
+try {
+  const hub = q.get("hub");
+  if (hub) setHubBase(hub);
+  const repo = "Qwen/Qwen3.5-0.8B";
+  const exp = await (await fetch(q.get("expected"))).json();
+  const tok = await Tokenizer.fromUrl(`${hub}/${repo}/resolve/main/tokenizer.json`);
+  const ids = tok.encode(tok.chat([{ role: "user", content: "Who are you?" }]));
+  log("ids match:", JSON.stringify(ids) === JSON.stringify(exp.ids), ids.length);
+  let t0 = performance.now();
+  const m = await Model.load(repo, { cache: false, onProgress: p => { if (p.frac === 1 || Math.random() < 0.002) log(p.phase, p.frac.toFixed(3)); } });
+  log("loaded in", ((performance.now() - t0) / 1000).toFixed(1), "s; gpu MB", (m.gpu.bytes / 1e6).toFixed(0));
+  m.alloc(3, 256, 64);
+  const T = ids.length;
+  const cap = m.gpu.buffer(m.L * T * m.I * 4, "cap");
+  m.reset(0);
+  t0 = performance.now();
+  m.prefill(0, ids, { capture: cap, capT: T, capT0: 0 });
+  const lg = await m.logitsRow(0);
+  log("prefill+logits", ((performance.now() - t0) / 1000).toFixed(2), "s");
+  const acts = new Float32Array(await m.gpu.read(cap));
+  const res = { ids };
+  const top = [...lg.keys()].sort((a, b) => lg[b] - lg[a]).slice(0, 20);
+  res.logits_top = top;
+  res.logits_top_vals = top.map(i => lg[i]);
+  res.logits_sample = [];
+  for (let i = 0; i < 4096; i += 7) res.logits_sample.push(lg[i]);
+  res.acts = {};
+  for (const l of [0, 3, 11, 23]) {
+    const at = (t, n) => acts[(l * T + t) * m.I + n];
+    let mx = 0;
+    for (let i = l * T * m.I; i < (l + 1) * T * m.I; i++) mx = Math.max(mx, Math.abs(acts[i]));
+    res.acts[l] = { last: Array.from({ length: 64 }, (_, n) => at(T - 1, n)), absmax: mx, n100: Array.from({ length: T }, (_, t) => at(t, 100)) };
+  }
+  // report agreement right away (decode on a software GPU is slow)
+  const rel = (a, b) => { let num = 0, den = 0; a.forEach((x, i) => { num += (x - b[i]) ** 2; den += b[i] ** 2; }); return Math.sqrt(num / den); };
+  log("top-1", top[0], "vs", exp.logits_top[0], "| top-20 overlap", top.filter(x => exp.logits_top.includes(x)).length,
+      "| logit rel err", rel(res.logits_sample, exp.logits_sample).toFixed(4));
+  for (const l of Object.keys(exp.acts)) log(`L${l} act rel err: last ${rel(res.acts[l].last, exp.acts[l].last).toFixed(4)}, n100 ${rel(res.acts[l].n100, exp.acts[l].n100).toFixed(4)}`);
+  // greedy, 3 rows: + push, none, - push on L12 N1234
+  const eos = tok.id("<|im_end|>");
+  const pushes = { 12: [{ n: 1234, mode: "add", vals: [8, 0, -8] }] };
+  for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, ids, { pushes }); }
+  const outs = [[], [], []], done = [false, false, false];
+  t0 = performance.now();
+  let steps = 0;
+  const STEPS = +(q.get("steps") || 24);
+  for (let s = 0; s < STEPS; s++) {
+    const nxt = await m.argmaxAll();
+    steps++;
+    nxt.forEach((t, r) => { if (!done[r]) { if (t === eos) done[r] = true; else outs[r].push(t); } });
+    if (done.every(Boolean)) break;
+    m.step(nxt, { pushes });
+  }
+  log("decode", steps, "steps,", ((performance.now() - t0) / steps).toFixed(0), "ms/step");
+  res.greedy_push_up = outs[0]; res.greedy = outs[1]; res.greedy_push_down = outs[2];
+  for (const k of ["greedy", "greedy_push_up", "greedy_push_down"]) log(k, JSON.stringify(tok.decode(res[k])));
+  window.__result = res;
+} catch (e) {
+  log("ERROR", e.stack || e);
+  window.__error = String(e.stack || e);
+}
+window.__done = true;
+</script>

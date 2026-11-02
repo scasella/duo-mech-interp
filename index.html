@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en" data-layout="narrow">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<title>Duo Neuron Explorer</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%23151515%22/%3E%3Crect x=%227.4%22 y=%222%22 width=%221.2%22 height=%2212%22 fill=%22%23333%22/%3E%3Ccircle cx=%224.5%22 cy=%228%22 r=%222%22 fill=%22%23ffb547%22/%3E%3Ccircle cx=%2211.5%22 cy=%228%22 r=%222%22 fill=%22%23ff4f9a%22/%3E%3C/svg%3E">
+<link rel="stylesheet" href="app/style.css">
+</head>
+<body>
+<div id="app">
+  <!-- left / bottom pane: the model -->
+  <section id="browse" class="pane">
+    <header class="bar">
+      <span class="brand">neuron explorer</span>
+      <input id="jump" placeholder="L12 N1234" aria-label="go to neuron" spellcheck="false" autocomplete="off" autocapitalize="characters" enterkeyhint="go">
+      <span id="status" class="mono dim"></span>
+    </header>
+    <nav class="tabs" id="btabs">
+      <button data-bt="map" class="on">map</button><button data-bt="run">fires</button><button data-bt="list">list</button>
+    </nav>
+    <div class="bpane on" id="bt-map">
+      <canvas id="map"></canvas>
+      <div id="map-tip" class="tip mono" hidden></div>
+      <div id="map-legend" class="dim">tap a layer to see its sheet, then drag across neurons to preview</div>
+    </div>
+    <div class="bpane" id="bt-run">
+      <form id="run-form" class="stack">
+        <textarea id="run-text" rows="4" spellcheck="false" placeholder="Paste text: see which neurons fire most on each token"></textarea>
+        <div class="row">
+          <span class="seg" id="run-sign"><button type="button" data-s="both" class="on">±</button><button type="button" data-s="+">+</button><button type="button" data-s="-">−</button></span>
+          <span class="lab">L</span><input id="run-lo" value="0" inputmode="numeric" class="num" aria-label="from layer"><span class="lab">–</span><input id="run-hi" value="23" inputmode="numeric" class="num" aria-label="to layer">
+          <button id="run-go" type="submit" class="go">run</button>
+        </div>
+      </form>
+      <div id="run-cal" class="note"></div>
+      <div id="run-toks" class="toks"></div>
+      <ol id="run-rows" class="rows"></ol>
+    </div>
+    <div class="bpane" id="bt-list">
+      <div class="note dim">Named and recently opened neurons. Names stay in this browser.</div>
+      <ol id="list-rows" class="rows"></ol>
+    </div>
+  </section>
+
+  <!-- right / top pane: one neuron -->
+  <section id="neuron" class="pane">
+    <header class="bar">
+      <span id="f-id" class="mono">no neuron open</span>
+      <span id="f-meta" class="mono dim"></span>
+      <button id="f-prev" class="icon" aria-label="previous neuron" title="previous neuron">‹</button>
+      <button id="f-next" class="icon" aria-label="next neuron" title="next neuron">›</button>
+    </header>
+    <textarea id="f-name" rows="1" placeholder="name this neuron" spellcheck="false" aria-label="neuron name"></textarea>
+    <nav class="tabs" id="ntabs">
+      <button data-nt="chat" class="on">chat</button><button data-nt="lens">lens</button><button data-nt="examples">examples</button>
+    </nav>
+    <div class="npane on" id="nt-chat">
+      <div id="c-lens" class="lensline"></div>
+      <div id="c-thread">
+        <div class="col" data-row="0"><div class="colhead up"></div><div class="turns"></div></div>
+        <div class="col" data-row="1"><div class="colhead"></div><div class="turns"></div></div>
+        <div class="col" data-row="2"><div class="colhead down"></div><div class="turns"></div></div>
+      </div>
+      <div id="c-dots" class="dots"><i class="on"></i><i></i><i></i></div>
+      <div id="c-reads" class="toks" hidden></div>
+    </div>
+    <div class="npane" id="nt-lens"></div>
+    <div class="npane" id="nt-examples"></div>
+    <form id="composer">
+      <div class="row ctl">
+        <span class="seg" id="c-mode"><button type="button" data-m="add" class="on">add</button><button type="button" data-m="mul">×</button></span>
+        <span class="seg" id="c-dir"><button type="button" data-d="writes" class="on">writes</button><button type="button" data-d="reads">reads you</button></span>
+        <span class="stepper"><button type="button" id="c-minus" aria-label="smaller dose">−</button><input id="c-dose" class="mono" inputmode="decimal" aria-label="dose" value="0.8"><button type="button" id="c-plus" aria-label="larger dose">+</button></span>
+        <button type="button" id="c-clear" class="dim">clear</button>
+      </div>
+      <div class="row"><input id="c-input" placeholder="Who are you?" aria-label="message" autocomplete="off" enterkeyhint="send"><button id="c-go" type="submit" class="go">run</button></div>
+    </form>
+  </section>
+
+  <nav id="panes">
+    <button data-p="browse" class="on">model</button><button data-p="neuron">neuron</button>
+  </nav>
+</div>
+
+<div id="boot">
+  <div class="card">
+    <h1>Neuron explorer <span class="dim">on your phone</span></h1>
+    <p>Steer single MLP neurons of <b>Qwen3.5-0.8B</b> and watch what the model writes, fully on this device with WebGPU.
+      Every neuron of every layer (24 × 3,584) can be pushed up or down, read on your own text, and traced through the
+      weights. A port of <a href="https://github.com/lyramakesmusic/neuron-explorer" target="_blank" rel="noopener">lyramakesmusic/neuron-explorer</a>.</p>
+    <ul id="boot-facts" class="mono dim"></ul>
+    <div id="boot-progress" hidden><div class="bar-out"><div class="bar-in"></div></div><div id="boot-msg" class="mono dim"></div></div>
+    <div class="row"><button id="boot-go" class="go big">Load model</button><button id="boot-clear" class="dim" hidden>forget downloaded weights</button></div>
+    <p id="boot-err" class="err" hidden></p>
+  </div>
+</div>
+<script type="module" src="app/main.js"></script>
+</body>
+</html>
