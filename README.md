@@ -73,6 +73,7 @@ Screen keeps it. Needs iOS 26 or later (WebGPU is on by default since Safari 26)
 python tests/tokenizer_ref.py tokenizer.json expected.json && node tests/tokenizer.mjs tokenizer.json expected.json
 python tests/engine_ref.py <local checkpoint dir> engine_expected.json   # HF transformers, float32, CPU
 node tests/engine.mjs <served url> <expected url> <hub mirror url>        # same checks in headless Chromium WebGPU
+node tests/smoke.mjs <served url> <hub mirror url>                       # every explorer operation once, tiny inputs
 node tests/screens.mjs <served url> <hub mirror url> <out dir>           # screenshots at iPhone Duo viewport sizes
 ```
 

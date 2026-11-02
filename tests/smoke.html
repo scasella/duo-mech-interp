@@ -1,0 +1,41 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>explorer smoke test</title>
+<pre id="log"></pre>
+<script type="module">
+// Exercises every Explorer operation once with tiny inputs (runtime errors, shapes), loaded by tests/smoke.mjs.
+import { Model, setHubBase } from "../engine/model.js";
+import { Tokenizer } from "../engine/tokenizer.js";
+import { Explorer } from "../engine/analysis.js";
+const q = new URLSearchParams(location.search);
+const log = (...a) => { document.getElementById("log").textContent += a.join(" ") + "\n"; console.log(...a); };
+const t = async (name, fn) => { const t0 = performance.now(); const r = await fn(); log(`ok ${name} (${((performance.now() - t0) / 1000).toFixed(0)}s)`); return r; };
+window.__done = false;
+try {
+  const hub = q.get("hub"); setHubBase(hub);
+  const repo = "Qwen/Qwen3.5-0.8B";
+  const tok = await Tokenizer.fromUrl(`${hub}/${repo}/resolve/main/tokenizer.json`);
+  const m = await Model.load(repo, { cache: false });
+  m.alloc(3, 256, 32);
+  const ex = new Explorer(m, tok);
+  const r = await t("read", () => ex.read(5, 10, "Hi there", { chat: false }));
+  log("  read acts", r.acts.map(a => a.toFixed(3)).join(" "), "units", r.units.map(u => JSON.stringify(u.text)).join(" "));
+  const ids = await t("readIds", () => ex.readIds(5, 10, r.ids));
+  log("  readIds same as read:", ids.every((a, i) => Math.abs(a - r.acts[i]) < 1e-5));
+  const act = await t("activations", () => ex.activations("Hello world", { chat: false }));
+  log("  T", act.T, "acts", act.acts.length, "=", m.L * act.T * m.I, "| L5 N10 matches read:", Math.abs(act.acts[(5 * act.T + 0) * m.I + 10] - r.acts[0]) < 0.05 || "(different text)");
+  const top = ex.topAt(act, -1, { limit: 5 });
+  log("  top (raw)", JSON.stringify(top.slice(0, 3)));
+  await t("calibrate", () => ex.calibrate(["one two three four five six seven eight nine ten eleven twelve"], {}));
+  const ctx = ex.contexts(top[0].layer, top[0].n);
+  log("  contexts", JSON.stringify(ctx).slice(0, 200), "| scaled score", ex.scoreOf(top[0].layer, top[0].n, top[0].act).toFixed(3));
+  const deltas = [[], [], []];
+  const out = await t("steer (mul, 2 tokens)", () => ex.steer({
+    pushes: [{ layer: 12, n: 1234, dose: 4, mode: "mul" }],
+    rowsMessages: [0, 1, 2].map(() => [{ role: "user", content: "Hi" }]), maxNew: 2, onDelta: (row, d) => deltas[row].push(d),
+  }));
+  log("  steer texts", JSON.stringify(out), "deltas", JSON.stringify(deltas));
+  window.__ok = true;
+} catch (e) { log("ERROR", e.stack || e); }
+window.__done = true;
+</script>
