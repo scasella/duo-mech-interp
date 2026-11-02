@@ -425,7 +425,9 @@ export class Explorer {
       const seen = new Set(), display = [];
       for (const t of [...list].sort((x, y) => y.cos - x.cos)) {
         const k = t.text.trim().toLowerCase().slice(0, 4);
+        const w0 = t.text.trim().toLowerCase();
         if (seen.has(k) || (latin && !/^\s?\p{Script=Latin}+$/u.test(t.text))) continue;
+        if (!words.includes(w0) && isPiece(w0, list)) continue;
         seen.add(k); display.push(t.text.trim().toLowerCase());
       }
       return { words, q, targets: list, display: display.slice(0, 10) };
@@ -650,6 +652,13 @@ const STOP = new Set("the a an of to and or in on at for about with more less be
 const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
 // a whole word: " word" (word-initial piece), "Word" (capitalized, sentence start), or a run of CJK characters
 const wordlike = s => /^ \p{L}[\p{L}'-]+$/u.test(s) || /^\p{Lu}\p{Ll}+$/u.test(s) || /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+$/u.test(s);
+// a short word-initial piece of a longer listed word ("oce" of ocean, "seaw" of seaweed), not a word with its own
+// listed plural ("sea", "seas")
+const isPiece = (w0, list) => {
+  if (w0.length > 4) return false;
+  const all = list.map(o => o.text.trim().toLowerCase());
+  return all.some(w => w.length > w0.length && w.startsWith(w0)) && !all.includes(w0 + "s");
+};
 const lse = a => { let mx = -Infinity; for (const v of a) if (v > mx) mx = v; let s = 0; for (const v of a) s += Math.exp(v - mx); return mx + Math.log(s); };
 // short contexts that end where a topic word could come next (plain text, no chat template)
 const PROBE_CONTEXTS = ["My favorite thing in the world is", "Today I want to tell you about"];

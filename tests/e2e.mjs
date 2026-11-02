@@ -245,6 +245,8 @@ await step("find › reacts to: neurons for your words, per word, filter, open o
 
 await step("browse: map sheet, slide to preview, lift to open; open by number", async () => {
   await xtab("browse");
+  await page.$eval("#map", e => e.scrollIntoView({ block: "center" }));
+  await page.waitForTimeout(200);
   const box = await page.$eval("#map", e => { const r = e.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; });
   await page.mouse.click(box.x + box.w * 0.5, box.y + box.h * 0.5);
   await until(() => /Slide across the sheet/.test(document.getElementById("map-legend").textContent), null, 10000);
@@ -254,6 +256,7 @@ await step("browse: map sheet, slide to preview, lift to open; open by number", 
   await until(() => document.querySelector("#map-tip .up"), null, 0);
   await page.mouse.up();
   await page.mouse.click(box.x + 60, box.y + 18);  // back to all layers
+  await page.$eval("#goto", e => e.scrollIntoView({ block: "center" }));
   await type("#go-l", "3"); await type("#go-n", "7"); await page.keyboard.press("Enter");
   await until(() => document.getElementById("who-name").textContent === "Neuron 7", null, 10000);
 });

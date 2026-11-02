@@ -545,16 +545,18 @@ function setFindMode(f) {
 }
 $$("#find-mode button").forEach(b => (b.onclick = () => setFindMode(b.dataset.f)));
 
-const effect = r => r.kl < 0.15 ? "gentle" : r.kl < 0.8 ? "clear" : r.kl < 2.5 ? "strong" : "very strong";
+// How hard it pulls toward the topic (log-odds gain at the test push) and how to dose it; the recommended strength
+// already tames neurons that pull too hard, so no raw multipliers here (they describe the test push, not your use).
+const pull = r => (r.gain > 4 ? "strong pull" : r.gain > 1.5 ? "clear pull" : "slight pull") + " toward the topic";
+const dosing = r => (r.rec < 0.6 ? "best used gently" : r.rec > 1 ? "needs a firm push" : "works at normal strength");
 function goalRow(r, i) {
   const dir = r.sign > 0 ? "▲ boost" : "▼ suppress";
-  const times = Math.exp(r.gain);
   const pv = r.preview == null ? (i < PREVIEWS ? `<span class="pv wait">writing a test story…</span>` : "")
     : `<span class="pv">“${esc(r.preview.slice(0, 160))}${r.preview.length > 160 ? "…" : ""}”</span>`;
   const flags = r.preview == null ? "" : r.repeats > 0.35 ? ` · <span class="warn">repeats itself</span>` : r.hits ? ` · <span class="good">on topic</span>` : "";
   return `<li data-l="${r.layer}" data-n="${r.n}" data-i="${i}">
     <span class="t"><b>${esc(label(r.layer, r.n))}</b><span class="dim">layer ${r.layer}</span><span class="r ${r.sign > 0 ? "up" : "down"}">${dir} · ${r.rec}</span></span>
-    <span class="m">topic words ${times >= 10 ? Math.round(times) : times.toFixed(1)}× likelier · ${effect(r)} effect${flags}</span>
+    <span class="m">${pull(r)} · ${dosing(r)}${flags}</span>
     <span class="w">adds ${esc(r.adds.map(show).join("  ") || "—")}</span>${pv}</li>`;
 }
 
@@ -711,7 +713,7 @@ function overlayFind() {
 
 function renderSaved() {
   const saved = state.saved.map(parseKey).filter(Boolean);
-  const recent = state.recent.filter(r => !state.saved.includes(key(r.layer, r.n))).slice(0, 8);
+  const recent = state.recent.filter(r => !state.saved.includes(key(r.layer, r.n))).slice(0, 5);
   const row = (f, star) => `<li data-l="${f.layer}" data-n="${f.n}"><span class="t"><b>${esc(label(f.layer, f.n))}</b><span class="dim">layer ${f.layer}${state.names[key(f.layer, f.n)] ? ` · neuron ${f.n}` : ""}</span><span class="r">${star ? "★" : ""}</span></span></li>`;
   $("#saved-rows").innerHTML = (saved.length ? saved.map(f => row(f, true)).join("") : `<li class="none">Tap ☆ next to a neuron's name to keep it here.</li>`) +
     (recent.length ? `<li class="none">Recently opened</li>` + recent.map(f => row(f, false)).join("") : "");
