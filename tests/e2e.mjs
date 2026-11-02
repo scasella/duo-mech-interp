@@ -101,7 +101,7 @@ await step("download: progress in plain words, then the app", async () => {
 
 await step("first screen: choose a neuron, three ways in", async () => {
   expect(await visible("#try-example") && await visible("#go-find") && await visible("#surprise"), "start buttons missing");
-  expect((await text("#who-name")) === "Choose a neuron", "header: " + await text("#who-name"));
+  expect((await text("#who-name")) === "Neuron Explorer", "header: " + await text("#who-name"));
   expect(!(await visible("#composer")), "question box shown before a neuron is chosen");
   expect(await visible("#x-find"), "Find is not the first Explore tab");
 });

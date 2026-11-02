@@ -83,6 +83,7 @@ html[data-layout=tall] #explore, html[data-layout=laptop] #explore { grid-area: 
 .who { flex: 1; min-width: 0; text-align: left; display: flex; flex-direction: column; min-height: 44px; justify-content: center; border-radius: 10px; padding: 2px 0; }
 #who-name { font-size: 19px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #who-name::after { content: " ›"; color: var(--faint); font-weight: 400; }
+.who.none #who-name::after { content: ""; }
 #who-sub { font-size: 13px; color: var(--dim); }
 .busy { height: 2px; flex: none; overflow: hidden; background: var(--line); }
 .busy i { display: block; height: 100%; width: 30%; background: var(--accent); animation: slide 1.2s ease-in-out infinite; }
@@ -95,6 +96,7 @@ html[data-layout=tall] #explore, html[data-layout=laptop] #explore { grid-area: 
 
 .asked { color: var(--dim); font-size: 15px; margin: 4px 0 12px; }
 .asked b { color: var(--ink); font-weight: 600; }
+.asked .ex { display: block; color: var(--accent); font-size: 14px; margin-top: 2px; }
 .lane { border-radius: 14px; background: var(--raise); padding: 12px 14px 14px; margin-bottom: 10px; border-left: 3px solid var(--faint); }
 .lane.up { border-left-color: var(--up); }
 .lane.down { border-left-color: var(--down); }

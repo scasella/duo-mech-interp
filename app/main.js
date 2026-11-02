@@ -191,7 +191,7 @@ function start() {
   const h = parseHash();
   const f = h || store.get("focus", null);
   if (f) openNeuron(f.layer, f.n, { go: null });
-  else renderEmpty();
+  else { renderHeader(); renderEmpty(); }
   if (!ex.scale) setTimeout(() => (calibration ||= runCalibration()), 1500);
 }
 
@@ -207,7 +207,8 @@ const label = (l, n) => state.names[key(l, n)] || `Neuron ${n}`;
 
 function renderHeader() {
   const f = state.focus;
-  $("#who-name").textContent = f ? label(f.layer, f.n) : "Choose a neuron";
+  $("#who-name").textContent = f ? label(f.layer, f.n) : "Neuron Explorer";
+  $("#who").classList.toggle("none", !f);
   $("#who-sub").textContent = f ? (state.names[key(f.layer, f.n)] ? `Neuron ${f.n} · layer ${f.layer}` : `Layer ${f.layer} of ${model.L}`) : "";
   $("#save").hidden = !f;
   const saved = f && state.saved.includes(key(f.layer, f.n));
@@ -216,7 +217,7 @@ function renderHeader() {
   $("#save").setAttribute("aria-label", saved ? "Remove from your neurons" : "Save this neuron");
 }
 
-$("#who").onclick = () => { setXTab("about"); if (narrow()) setPane("explore"); };
+$("#who").onclick = () => { setXTab(state.focus ? "about" : "find"); if (narrow()) setPane("explore"); };
 $("#save").onclick = () => {
   const f = state.focus; if (!f) return;
   const k = key(f.layer, f.n);
@@ -260,12 +261,14 @@ function renderSuggest() {
 }
 $("#suggest").addEventListener("click", e => { const b = e.target.closest("button"); if (b) ask(b.textContent); });
 
-let exampleIdx = 0;
+let exampleIdx = 0, exampleHint = null;
 function tryExample() {
   const x = EXAMPLES[exampleIdx++ % EXAMPLES.length];
+  state.mode = "add";
   state.dose.add = x.dose ?? 0.8;
   renderStrength();
   openNeuron(x.layer, x.n, { go: "steer" });
+  exampleHint = { layer: x.layer, n: x.n, prompt: x.prompt, hint: x.hint };
   ask(x.prompt);
 }
 
@@ -317,7 +320,10 @@ function stopJob() { if (job) job.cancel.stop = true; }
 function renderLanes() {
   const rows = state.rows;
   const keep = state.keep;
-  $("#asked").innerHTML = !keep && rows[0].length ? `You asked <b>${esc(rows[0][rows[0].length - 2].content)}</b>` : "";
+  const asked = rows[0].length ? rows[0][rows[0].length - 2].content : null;
+  const f = state.focus, h = exampleHint;
+  const hint = h && f && h.layer === f.layer && h.n === f.n && h.prompt === asked ? ` <span class="ex">Example · ${esc(h.hint)}</span>` : "";
+  $("#asked").innerHTML = !keep && asked ? `You asked <b>${esc(asked)}</b>${hint}` : "";
   $$(".lane").forEach((lane, r) => {
     const msgs = rows[r], say = lane.querySelector(".say");
     let html = "";
