@@ -327,8 +327,7 @@ await step("forget downloaded weights", async () => {
   await page.close(); page = p2;
   await page.goto(site + q);
   await until(() => !document.getElementById("boot-clear").hidden, null, 30000);
-  await tap("#boot-clear");
-  await page.waitForLoadState("load");
+  await Promise.all([page.waitForNavigation({ timeout: 60000 }), tap("#boot-clear")]);  // forget reloads the page
   await until(() => document.querySelector("#boot-facts li"), null, 30000);
   expect((await text("#boot-go")) === "Load model", "button " + await text("#boot-go"));
   expect(!(await page.evaluate(async () => (await caches.keys()).length)), "caches left: " + await page.evaluate(async () => (await caches.keys()).join(",")));

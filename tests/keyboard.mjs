@@ -4,7 +4,8 @@
 // field keeps focus; then checks that a real screen change (rotate / unfold) still switches the layout.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.PLAYWRIGHT || "playwright");
+const pw = require(process.env.PLAYWRIGHT || "playwright");
+const chromium = pw[process.env.BROWSER || "chromium"];  // BROWSER=webkit runs the same checks in Safari's engine
 const base = process.argv[2];
 const sizes = [["outer", 382, 618, 300], ["split", 385, 609, 290], ["inner-landscape", 951, 620, 250], ["inner-portrait", 669, 902, 480]];
 const fields = [["#c-input", null], ["#jump", null], ["#run-text", "run"], ["#f-name", null]];
