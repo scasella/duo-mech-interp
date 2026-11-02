@@ -22,7 +22,11 @@ def pca(X, k=3):
     Xc = X - X.mean(0, keepdims=True)
     U, S, Vt = np.linalg.svd(Xc, full_matrices=False)
     ev = S ** 2
-    return Xc @ Vt[:k].T, ev / max(ev.sum(), 1e-12), Vt[:k]
+    coords = Xc @ Vt[:k].T
+    if coords.shape[1] < k:                                 # fewer dimensions than asked (e.g. a 2-feature group)
+        coords = np.pad(coords, ((0, 0), (0, k - coords.shape[1])))
+        ev = np.pad(ev, (0, k - len(ev)))
+    return coords, ev / max(ev.sum(), 1e-12), Vt[:k]
 
 
 def participation(evfrac):
