@@ -166,7 +166,7 @@ def harvest(tok, lm, saes, batches, n_tokens, n_store_seqs, out_dir, device, par
 
 
 @torch.inference_mode()
-def harvest_centroids(tok, lm, layers, batches, n_tokens, out_dir, device, min_count=20, log=print):
+def harvest_centroids(tok, lm, layers, batches, n_tokens, out_dir, device, min_count=20, model=BASE, log=print):
     """Average residual of every vocabulary token over its occurrences in the text (one row per token that occurs
     at least `min_count` times), per layer. Families of words whose averages form a circle or a line are searched
     for in analyze.py words; this needs no SAE."""
@@ -201,7 +201,7 @@ def harvest_centroids(tok, lm, layers, batches, n_tokens, out_dir, device, min_c
     np.save(f"{out_dir}/word_counts.npy", cnt[keep].cpu().numpy().astype(np.int64))
     for L in layers:
         np.save(f"{out_dir}/L{L}_word_means.npy", (sums[L][keep] / cnt[keep, None]).half().cpu().numpy())
-    meta = dict(base=BASE, layers=layers, n_tokens=seen, words=int(keep.numel()), min_count=min_count,
+    meta = dict(base=model, layers=layers, n_tokens=seen, words=int(keep.numel()), min_count=min_count,
                 seconds=round(time.time() - t0))
     json.dump(meta, open(f"{out_dir}/words_meta.json", "w"), indent=1)
     log(json.dumps(meta))

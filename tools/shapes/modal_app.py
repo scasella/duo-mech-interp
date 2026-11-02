@@ -36,22 +36,22 @@ def harvest(run: str, layers: list, n_tokens: int, n_store: int, seq_len: int, b
 
 
 @app.function(image=image, gpu=GPU, volumes={"/data": vol}, memory=65536, timeout=4 * 3600)
-def centroids(run: str, layers: list, n_tokens: int, seq_len: int, batch: int, min_count: int):
+def centroids(run: str, layers: list, n_tokens: int, seq_len: int, batch: int, min_count: int, model: str):
     import torch, core
     out = f"/data/runs/{run}"
-    tok, lm = core.load_model("cuda", torch.bfloat16, max(layers), cache_dir="/data/hf")
+    tok, lm = core.load_model("cuda", torch.bfloat16, max(layers), path=model, cache_dir="/data/hf")
     batches = core.corpus_batches(tok, seq_len, batch)
     meta = core.harvest_centroids(tok, lm, layers, batches, n_tokens, out, "cuda", min_count=min_count,
-                                  log=lambda s: print(s, flush=True))
+                                  model=model, log=lambda s: print(s, flush=True))
     vol.commit()
     return meta
 
 
 @app.local_entrypoint()
 def words(run: str = "words", layers: str = "6,12,18", tokens: int = 30_000_000, seq: int = 512, batch: int = 32,
-          min_count: int = 20):
+          min_count: int = 20, model: str = "Qwen/Qwen3.5-2B-Base"):
     """Average residual per vocabulary word (no SAE): modal run tools/shapes/modal_app.py::words"""
-    print(centroids.remote(run, [int(x) for x in layers.split(",")], tokens, seq, batch, min_count))
+    print(centroids.remote(run, [int(x) for x in layers.split(",")], tokens, seq, batch, min_count, model))
     print(f"done. fetch with: modal volume get qwen-scope-shapes runs/{run} ./runs/{run}")
 
 
