@@ -252,7 +252,7 @@ export class Model {
   }
 
   async _loadCached(onProgress) {
-    if (!("caches" in self)) return false;
+    if (!("caches" in self) || !(await caches.has(this._cacheName()))) return false;
     const cache = await caches.open(this._cacheName());
     if (!(await cache.match("/w/complete"))) return false;
     const g = this.gpu;

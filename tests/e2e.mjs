@@ -236,6 +236,7 @@ await step("reads you: tokens shaded by the neuron, tap shows the value", async 
 
 await step("fires: run text, rows, map overlay, tap token, filters, open a row", async () => {
   await tap('#btabs button[data-bt="run"]');
+  await page.fill("#run-lo", "0"); await page.fill("#run-hi", "23");
   await type("#run-text", "Paris is the capital of France. 2 + 2 = 4.");
   await tap("#run-go");
   await until(() => document.querySelectorAll("#run-rows li").length >= 50, null, 0);
@@ -271,7 +272,10 @@ await step("examples: calibration on the built-in corpus, contexts shaded", asyn
 // ---------------- visit 2: reopen (weights from this browser), other screens ----------------
 
 await step("reopen: loads from the stored copy, restores neuron, name and calibration", async () => {
+  await page.goto("about:blank");  // a real reload (same URL with only a new #hash would not reload)
   await page.goto(site + q + "#L12N1234");
+  await until(() => document.querySelector("#boot-facts li"), null, 30000);
+  expect((await text("#boot-go")) === "Open", "button says " + await text("#boot-go") + " with weights stored");
   await until(() => document.getElementById("boot").hidden || !document.getElementById("boot-err").hidden, null, 0);
   const msgs = await page.$eval("#boot-msg", e => e.textContent);
   expect(!/streaming/.test(msgs), "downloaded again: " + msgs);
@@ -292,6 +296,7 @@ await step("outer display: one pane at a time, column pager", async () => {
   const dot = await page.$$eval("#c-dots i", l => l.findIndex(x => x.classList.contains("on")));
   expect(dot === 2, "pager dot " + dot);
   await tap('#panes button[data-p="browse"]');
+  await tap('#btabs button[data-bt="map"]');
   expect(await page.$eval("#map", e => e.offsetWidth > 300), "map hidden");
 });
 
@@ -302,8 +307,9 @@ await step("inner display portrait and laptop pose: neuron on top, deck below", 
   await page.evaluate(() => { window.__duoSim = "laptop"; dispatchEvent(new Event("resize")); });
   await page.waitForTimeout(300);
   expect((await layout()) === "laptop", "layout " + await layout());
-  const [top, bottom] = await page.$$eval("#neuron, #browse", l => l.map(e => e.getBoundingClientRect().top));
-  expect(top < bottom, "neuron not above the deck");
+  const top = await page.$eval("#neuron", e => e.getBoundingClientRect().top);
+  const bottom = await page.$eval("#browse", e => e.getBoundingClientRect().top);
+  expect(top < bottom, `neuron (top ${top}) not above the deck (top ${bottom})`);
   await page.evaluate(() => { window.__duoSim = "book"; dispatchEvent(new Event("resize")); });
   await resize(951, 620);
   expect((await layout()) === "book", "layout " + await layout());

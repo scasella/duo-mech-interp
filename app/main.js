@@ -129,8 +129,9 @@ async function boot() {
   if (cached || Q.has("autoload")) $("#boot-go").click();
 }
 
-async function hasCache() {
-  try { return !!(await (await caches.open(`duo-mech-interp:${REPO}:q8v1`)).match("/w/complete")); } catch { return false; }
+async function hasCache() {  // caches.open would create the cache, so look before opening
+  const name = `duo-mech-interp:${REPO}:q8v1`;
+  try { return (await caches.has(name)) && !!(await (await caches.open(name)).match("/w/complete")); } catch { return false; }
 }
 
 async function load() {
@@ -525,6 +526,7 @@ async function saveCalibration() {
 }
 async function loadCalibration() {
   try {
+    if (!(await caches.has(calName()))) return;
     const c = await caches.open(calName());
     const get = async k => { const r = await c.match(k); return r ? r.arrayBuffer() : null; };
     const [pos, neg, tp, tn] = await Promise.all(["/pos", "/neg", "/topP", "/topN"].map(get));
@@ -558,6 +560,7 @@ $("#run-form").addEventListener("submit", async e => {
   status("running text…");
   try {
     state.run = await ex.activations(text, { maxTokens: 128 });
+    state.run.at = Date.now();  // a new run always re-renders, even for the same text
     state.runPos = -1;
     renderRunToks();
     renderRun();
@@ -575,14 +578,24 @@ function renderRunToks() {
   }));
 }
 
+// Row taps are handled on the list, so a re-render between touch-down and click cannot swallow them.
+$("#run-rows").addEventListener("click", e => {
+  const li = e.target.closest("li[data-l]");
+  if (li) openNeuron(+li.dataset.l, +li.dataset.n);
+});
+
+let runKey = "";
 function renderRun() {
   const r = state.run;
   if (!r) return;
   const lo = +$("#run-lo").value || 0, hi = +$("#run-hi").value || 23;
+  // a layer field's "change" also fires when it loses focus (e.g. to the tap on a row): nothing to redo then
+  const k = [r.ids.length, r.acts.length, state.runPos, runSign, lo, hi, !!ex.scale, r.at].join(",");
+  if (k === runKey) return;
+  runKey = k;
   const top = ex.topAt(r, state.runPos, { sign: runSign, lo, hi, limit: 150 });
   const tokAt = i => show(tok.piece(r.ids[i]));
   $("#run-rows").innerHTML = top.map(t => `<li data-l="${t.layer}" data-n="${t.n}"><span class="n ${t.score > 0 ? "up" : "down"}">L${t.layer} N${t.n}</span><span class="z">${Math.abs(t.score).toFixed(1)}</span><span class="w">${esc(state.names[key(t.layer, t.n)] || "")} <b>${esc(tokAt(t.pos))}</b> · ${t.act.toFixed(2)}</span></li>`).join("");
-  $$("#run-rows li").forEach(li => (li.onclick = () => openNeuron(+li.dataset.l, +li.dataset.n)));
   // map overlay: each neuron's score at the chosen token (or its strongest over the text), scaled so 1 = strong
   const ov = new Float32Array(model.L * model.I);
   const T = r.T, I = model.I;
