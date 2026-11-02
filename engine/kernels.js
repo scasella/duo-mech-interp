@@ -50,7 +50,8 @@ fn main(@builtin(workgroup_id) wg: vec3<u32>, @builtin(local_invocation_id) li: 
 
 // y[M, N] (+)= x[M, K] . W[N, K]^T for small M (decode, short prefills): each workgroup computes 64 output rows,
 // 4 lanes per row, each lane taking 16 int8 weights (one vec4<u32>) per step; two barrier rounds to add the lanes.
-// xoff (in vec4<f32>) and yoff (in floats) let a call cover rows 8..15 of a longer input. ADD: accumulate into y.
+// Up to 16 input rows per call (16 KB of workgroup memory for the lane sums); xoff (in vec4<f32>) and yoff (in floats)
+// let a call cover rows 16..31 of a longer input. ADD: accumulate into y.
 export const matvec = (M, add) => /* wgsl */ `
 struct P { N: u32, K: u32, stride: u32, xoff: u32, yoff: u32, p0: u32, p1: u32, p2: u32 };
 @group(0) @binding(0) var<uniform> p: P;

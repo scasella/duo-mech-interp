@@ -368,15 +368,15 @@ export class Model {
 
   // ---------- forward ----------
 
-  // y[M, rows] (+)= x[M, cols] . W^T. Up to 16 input rows go through the matrix-vector kernel (8 rows per pass),
-  // longer inputs through the tiled matmul.
+  // y[M, rows] (+)= x[M, cols] . W^T. Up to 32 input rows (decode, chat-length prompts) go through the
+  // matrix-vector kernel, 16 rows per pass; longer inputs through the tiled matmul.
   _mm(xBuf, d, yBuf, M, add = false) {
     const g = this.gpu;
-    if (M <= 16) {
+    if (M <= 32) {
       const wgs = Math.ceil(d.rows / 64);
       const stride = Math.min(wgs, 32768);
-      for (let m0 = 0; m0 < M; m0 += 8) {
-        const mm = Math.min(8, M - m0);
+      for (let m0 = 0; m0 < M; m0 += 16) {
+        const mm = Math.min(16, M - m0);
         g.run(`mv${mm}${add ? "a" : ""}`, K.matvec(mm, add), [xBuf, d.w, d.s, yBuf], [stride, Math.ceil(wgs / stride)],
           [d.rows, d.cols, stride, m0 * d.cols / 4, m0 * d.rows, 0, 0, 0]);
       }

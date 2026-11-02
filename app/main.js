@@ -121,7 +121,11 @@ async function boot() {
   if (cached) { facts.push("Weights are already stored in this browser."); $("#boot-go").textContent = "Open"; $("#boot-clear").hidden = false; }
   $("#boot-facts").innerHTML = facts.map(f => `<li>${esc(f)}</li>`).join("");
   $("#boot-go").onclick = () => load().catch(e => { console.error(e); fail(String(e.message || e)); $("#boot-go").disabled = false; });
-  $("#boot-clear").onclick = async () => { await Model.clearCache(REPO); await caches.delete(calName()); location.reload(); };
+  $("#boot-clear").onclick = async () => {
+    await Model.clearCache(REPO); await caches.delete(calName());
+    try { localStorage.removeItem(`duo.residP50:${REPO}:q8v1`); } catch {}
+    location.reload();
+  };
   if (cached || Q.has("autoload")) $("#boot-go").click();
 }
 
@@ -149,8 +153,11 @@ async function load() {
   tok = await tokP;
   model.alloc(3, 1024, 128);
   ex = new Explorer(model, tok);
-  msg.textContent = "measuring dose units…";
-  await ex.init();
+  // dose units (median residual norm leaving each layer) depend only on the weights: measured once, then remembered
+  const unitsKey = `residP50:${REPO}:q8v1`;
+  const known = store.get(unitsKey, null);
+  if (Array.isArray(known) && known.length === model.L) ex.residP50 = known;
+  else { msg.textContent = "measuring dose units…"; store.set(unitsKey, await ex.init()); }
   await loadCalibration();
   model.gpu.device.lost.then(i => status("GPU lost: " + (i.message || i.reason) + " — reload"));
   $("#boot").hidden = true;
@@ -250,21 +257,28 @@ async function openNeuron(layer, n, { pane = true, push = true } = {}) {
   state.chat.rows = [[], [], []];
   renderThread();
   renderChatHeads();
-  $("#c-reads").hidden = true;
+  $("#c-reads").innerHTML = "";
+  $("#c-reads").hidden = state.chat.dir !== "reads";
+  $("#c-lens").innerHTML = "";
   map.setFocus({ layer, n });
   map.setWeb(null);
   if (pane && layoutMode === "narrow") setPane("neuron");
   const cur = () => state.focus && state.focus.layer === layer && state.focus.n === n;
-  const lens = await ex.lens(layer, n, 10);
-  if (!cur()) return;
-  $("#c-lens").innerHTML = `<span class="up">+</span><div class="chips">${chips(lens.up)}</div><span class="down">−</span><div class="chips">${chips(lens.down)}</div>`;
-  const unit = await ex.doseValue(layer, n, 1, "add");
-  if (!cur()) return;
-  $("#f-meta").textContent = `${model.types[layer] === "full_attention" ? "full attn" : "linear attn"} · dose 1 = ${unit.toFixed(2)} act`;
   if ($("#ntabs .on").dataset.nt !== "chat") setNTab($("#ntabs .on").dataset.nt);
-  const con = await ex.connections(layer, n, 12);
-  if (!cur()) return;
-  map.setWeb({ up: con.up.slice(0, 6), down: con.down.slice(0, 6) });
+  try {
+    const lens = await ex.lens(layer, n, 10);
+    if (!cur()) return;
+    $("#c-lens").innerHTML = `<span class="up">+</span><div class="chips">${chips(lens.up)}</div><span class="down">−</span><div class="chips">${chips(lens.down)}</div>`;
+    const unit = await ex.doseValue(layer, n, 1, "add");
+    if (!cur()) return;
+    $("#f-meta").textContent = `${model.types[layer] === "full_attention" ? "full attn" : "linear attn"} · dose 1 = ${unit.toFixed(2)} act`;
+    const con = await ex.connections(layer, n, 12);
+    if (!cur()) return;
+    map.setWeb({ up: con.up.slice(0, 6), down: con.down.slice(0, 6) });
+  } catch (err) {
+    console.error(err);
+    status("error: " + (err.message || err));
+  }
 }
 
 const chips = list => list.map(t => `<span class="chip">${esc(show(t))}</span>`).join("");
@@ -345,26 +359,29 @@ $("#composer").addEventListener("submit", async e => {
   if (state.chat.dir === "reads") return runReads(text);
   if (job) { stopJob(); return; }
   const { layer, n } = state.focus, c = state.chat;
+  // this run writes into its own rows: opening another neuron or "clear" replaces state.chat.rows, and the run (which
+  // stops at its next token) must not touch the new ones
+  const rows = c.rows;
+  const live = () => state.chat.rows === rows;
   $("#c-input").value = "";
-  for (let r = 0; r < 3; r++) c.rows[r].push({ role: "user", content: text }, { role: "assistant", content: "", live: true });
+  for (let r = 0; r < 3; r++) rows[r].push({ role: "user", content: text }, { role: "assistant", content: "", live: true });
   renderThread();
   const cancel = { stop: false };
   job = { cancel };
   $("#c-go").textContent = "stop";
   const t0 = performance.now();
   let ntok = 0;
-  const turnEls = () => $$("#c-thread .col").map(col => [...col.querySelectorAll(".turn .a")].pop());
-  let els = turnEls();
+  const els = $$("#c-thread .col").map(col => [...col.querySelectorAll(".turn .a")].pop());
   try {
     await ex.steer({
       pushes: [{ layer, n, dose: c.dose[c.mode], mode: c.mode }],
-      rowsMessages: c.rows.map(rows => rows.slice(0, -1).map(m => ({ role: m.role, content: m.content }))),
+      rowsMessages: rows.map(rs => rs.slice(0, -1).map(m => ({ role: m.role, content: m.content }))),
       maxNew: 200,
       cancel,
       onDelta: (r, d) => {
-        const msg = c.rows[r][c.rows[r].length - 1];
-        msg.content += d;
-        if (els[r]) els[r].textContent = msg.content;
+        rows[r][rows[r].length - 1].content += d;
+        if (!live()) return;
+        if (els[r]) els[r].textContent = rows[r][rows[r].length - 1].content;
         ntok++;
         if (ntok % 6 === 0) status(`steering · ${(ntok / 3 / ((performance.now() - t0) / 1000)).toFixed(1)} tok/s per column`);
         const box = els[r]?.closest(".turns");
@@ -373,19 +390,23 @@ $("#composer").addEventListener("submit", async e => {
     });
   } catch (err) {
     console.error(err);
-    for (let r = 0; r < 3; r++) c.rows[r][c.rows[r].length - 1].content += `\n[${err.message || err}]`;
+    for (let r = 0; r < 3; r++) rows[r][rows[r].length - 1].content += `\n[${err.message || err}]`;
+  } finally {
+    for (let r = 0; r < 3; r++) delete rows[r][rows[r].length - 1].live;
+    if (live()) renderThread();
+    job = null;
+    $("#c-go").textContent = state.chat.dir === "reads" ? "read" : "run";
+    status("");
   }
-  for (let r = 0; r < 3; r++) delete c.rows[r][c.rows[r].length - 1].live;
-  renderThread();
-  job = null;
-  $("#c-go").textContent = "run";
-  status("");
 });
 
 async function runReads(text) {
-  const { layer, n } = state.focus;
+  const { layer, n } = state.focus, f0 = state.focus;
   $("#c-reads").innerHTML = `<span class="dim">reading…</span>`;
-  const res = await ex.read(layer, n, text, { chat: true });
+  let res;
+  try { res = await ex.read(layer, n, text, { chat: true }); }
+  catch (err) { console.error(err); $("#c-reads").innerHTML = `<span class="err">${esc(err.message || err)}</span>`; return; }
+  if (state.focus !== f0) return;
   const max = Math.max(1e-6, ...res.acts.map(Math.abs));
   $("#c-reads").innerHTML = res.units.map(u => {
     const a = u.idx.reduce((s, i) => (Math.abs(res.acts[i]) > Math.abs(s) ? res.acts[i] : s), 0);
@@ -412,14 +433,16 @@ async function renderLens() {
   const { layer, n } = state.focus, el = $("#nt-lens");
   const f0 = state.focus;
   el.innerHTML = `<div class="sect"><h3>logit lens · what the down column writes</h3><div id="ll" class="dim">…</div></div>
-    <div class="sect"><h3>steer lens · next-token change when pushed ±0.8</h3><div id="sl"><button class="btn" id="sl-go">compute (3 prompts × 3 rows)</button></div></div>
+    <div class="sect"><h3>steer lens · next-token change when pushed ±0.8</h3><div id="sl"><button class="btn" id="sl-go">compute (3 prompts, pushed up and down)</button></div></div>
     <div class="sect"><h3>connections · direct path through the weights</h3><div id="cn" class="dim">…</div></div>`;
   const lens = await ex.lens(layer, n, 16);
   if (state.focus !== f0) return;
   $("#ll").innerHTML = `<div class="lensgrid"><span class="up">+</span><div class="chips">${chips(lens.up)}</div><span class="down">−</span><div class="chips">${chips(lens.down)}</div></div>`;
   $("#sl-go").onclick = async () => {
     $("#sl").innerHTML = `<span class="dim">pushing the neuron on three prompts…</span>`;
-    const s = await ex.steerLens(layer, n, { dose: 0.8, k: 14 });
+    let s;
+    try { s = await ex.steerLens(layer, n, { dose: 0.8, k: 14 }); }
+    catch (err) { console.error(err); if (state.focus === f0) $("#sl").innerHTML = `<span class="err">${esc(err.message || err)}</span>`; return; }
     if (state.focus !== f0) return;
     $("#sl").innerHTML = `<div class="lensgrid"><span class="up">+</span><div class="chips">${chips(s.up)}</div><span class="down">−</span><div class="chips">${chips(s.down)}</div></div>
       <div class="note" style="padding:6px 0 0">mean KL from baseline: up ${s.klUp.toFixed(3)} · down ${s.klDown.toFixed(3)}</div>`;
@@ -449,7 +472,7 @@ function renderExamples() {
   const { layer, n } = state.focus;
   if (!ex.examples) {
     el.innerHTML = `<div class="sect"><p class="dim">Where does this neuron fire? Run the built-in corpus (${CORPUS.length} short passages: prose, code, chat, Chinese, French, law, medicine…) through the model once; every neuron's strongest contexts are kept on this device.</p><button class="btn" id="cal-go">run calibration</button> <span id="cal-msg" class="dim mono"></span></div>`;
-    $("#cal-go").onclick = () => calibrate($("#cal-msg")).then(renderExamples);
+    $("#cal-go").onclick = e => { e.target.disabled = true; calibrate($("#cal-msg")).then(renderExamples); };
     return;
   }
   const ctx = ex.contexts(layer, n, 28) || [];
@@ -474,7 +497,12 @@ function renderExamples() {
   })();
 }
 
-async function calibrate(msgEl) {
+let calibrating = null;
+function calibrate(msgEl) {
+  calibrating ||= runCalibration(msgEl).catch(err => { console.error(err); status("calibration failed: " + (err.message || err)); }).finally(() => (calibrating = null));
+  return calibrating;
+}
+async function runCalibration(msgEl) {
   const t0 = performance.now();
   await ex.calibrate(CORPUS, {
     onProgress: p => { if (msgEl) msgEl.textContent = `${p.chunk}/${p.chunks} · ${((performance.now() - t0) / 1000).toFixed(0)}s`; status(`calibrating ${p.chunk}/${p.chunks}`); },
@@ -515,7 +543,7 @@ function renderRunCal() {
   $("#run-cal").innerHTML = ex?.scale ? "scores: activation as a multiple of the neuron's range on the built-in corpus"
     : `scores are raw activations until you calibrate · <button class="btn" id="run-cal-go">calibrate</button> <span class="mono" id="run-cal-msg"></span>`;
   const b = $("#run-cal-go");
-  if (b) b.onclick = () => calibrate($("#run-cal-msg"));
+  if (b) b.onclick = () => { b.disabled = true; calibrate($("#run-cal-msg")); };
 }
 
 let runSign = "both";

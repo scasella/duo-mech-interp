@@ -252,13 +252,17 @@ export class Explorer {
       const m = this.m, V = m.V;
       const up = new Float32Array(V), down = new Float32Array(V);
       let klUp = 0, klDown = 0;
+      this._baseLP ||= new Map();  // the unsteered distribution of each prompt is the same for every neuron
       for (const p of STEER_LENS_PROMPTS) {
         const ids = this.tok.encode(this.tok.chat([{ role: "user", content: p }]));
-        for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, ids, { pushes }); }
-        const lg = await m.logitsAll();
-        const lp = [0, 1, 2].map(r => logSoftmax(lg.subarray(r * V, (r + 1) * V)));
-        for (let i = 0; i < V; i++) { up[i] += lp[0][i] - lp[1][i]; down[i] += lp[2][i] - lp[1][i]; }
-        klUp += kl(lp[0], lp[1]); klDown += kl(lp[2], lp[1]);
+        let base = this._baseLP.get(p);
+        if (!base) { m.reset(1); m.prefill(1, ids); base = logSoftmax(await m.logitsRow(1)); this._baseLP.set(p, base); }
+        m.reset(0); m.prefill(0, ids, { pushes });
+        const lpUp = logSoftmax(await m.logitsRow(0));
+        m.reset(2); m.prefill(2, ids, { pushes });
+        const lpDown = logSoftmax(await m.logitsRow(2));
+        for (let i = 0; i < V; i++) { up[i] += lpUp[i] - base[i]; down[i] += lpDown[i] - base[i]; }
+        klUp += kl(lpUp, base); klDown += kl(lpDown, base);
       }
       const P = STEER_LENS_PROMPTS.length;
       const tu = topk(up, k, this.tok), td = topk(down, k, this.tok);

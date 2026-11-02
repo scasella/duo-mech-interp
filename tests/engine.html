@@ -47,6 +47,15 @@ try {
   log("top-1", top[0], "vs", exp.logits_top[0], "| top-20 overlap", top.filter(x => exp.logits_top.includes(x)).length,
       "| logit rel err", rel(res.logits_sample, exp.logits_sample).toFixed(4));
   for (const l of Object.keys(exp.acts)) log(`L${l} act rel err: last ${rel(res.acts[l].last, exp.acts[l].last).toFixed(4)}, n100 ${rel(res.acts[l].n100, exp.acts[l].n100).toFixed(4)}`);
+  // longer prompts: two passes of the matrix-vector kernel (17-32 tokens) and the tiled matmul (over 32)
+  for (const x of exp.extra || []) {
+    const ids2 = tok.encode(tok.chat([{ role: "user", content: x.text }]));
+    m.reset(0); m.prefill(0, ids2);
+    const lg2 = await m.logitsRow(0);
+    const top2 = [...lg2.keys()].sort((a, b) => lg2[b] - lg2[a]).slice(0, 20);
+    const samp = []; for (let i = 0; i < 4096; i += 7) samp.push(lg2[i]);
+    log(`${ids2.length}-token prompt: ids match ${JSON.stringify(ids2) === JSON.stringify(x.ids)} | top-1 ${top2[0]} vs ${x.logits_top[0]} | top-20 overlap ${top2.filter(t => x.logits_top.includes(t)).length} | logit rel err ${rel(samp, x.logits_sample).toFixed(4)}`);
+  }
   // greedy, 3 rows: + push, none, - push on L12 N1234
   const eos = tok.id("<|im_end|>");
   const pushes = { 12: [{ n: 1234, mode: "add", vals: [8, 0, -8] }] };

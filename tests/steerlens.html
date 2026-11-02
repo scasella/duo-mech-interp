@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>steer lens timing</title>
+<pre id="log"></pre>
+<script type="module">
+import { Model, setHubBase } from "../engine/model.js";
+import { Tokenizer } from "../engine/tokenizer.js";
+import { Explorer } from "../engine/analysis.js";
+const q = new URLSearchParams(location.search);
+const log = (...a) => { document.getElementById("log").textContent += a.join(" ") + "\n"; console.log(...a); };
+window.__done = false;
+try {
+  setHubBase(q.get("hub"));
+  const tok = await Tokenizer.fromUrl(`${q.get("hub")}/Qwen/Qwen3.5-0.8B/resolve/main/tokenizer.json`);
+  const m = await Model.load("Qwen/Qwen3.5-0.8B", { cache: false });
+  m.alloc(3, 1024, 128);
+  const ex = new Explorer(m, tok);
+  const pf = m.prefill.bind(m);
+  m.prefill = (r, ids, o) => { const t = performance.now(); pf(r, ids, o); log(`  prefill row ${r}, ${ids.length} tokens encoded in ${(performance.now() - t).toFixed(0)} ms`); };
+  const lr = m.logitsRow.bind(m);
+  m.logitsRow = async r => { const t = performance.now(); const v = await lr(r); log(`  logitsRow(${r}) waited ${((performance.now() - t) / 1000).toFixed(1)} s`); return v; };
+  let t = performance.now();
+  await ex.init(); log("init", ((performance.now() - t) / 1000).toFixed(1), "s");
+  t = performance.now();
+  const s = await ex.steerLens(12, 1234, { dose: 0.8, k: 8 });
+  log("steerLens", ((performance.now() - t) / 1000).toFixed(1), "s", JSON.stringify(s));
+  window.__ok = true;
+} catch (e) { log("ERROR", e.stack || e); }
+window.__done = true;
+</script>

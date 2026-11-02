@@ -23,6 +23,13 @@ const ctx = await chromium.launchPersistentContext(profile, {
   proxy: process.env.HTTPS_PROXY && !hub ? { server: process.env.HTTPS_PROXY } : undefined,
   viewport: { width: 951, height: 620 }, deviceScaleFactor: 2, hasTouch: true,
 });
+// SMALL_CORPUS=1 serves a two-passage calibration corpus (the real one is ~30 chunks: seconds on a phone, hours on a
+// software GPU); the app code and its calibration path are unchanged.
+if (process.env.SMALL_CORPUS) {
+  await ctx.route(/\/app\/corpus\.js(\?.*)?$/, route => route.fulfill({ contentType: "application/javascript", body:
+    "export const CORPUS = [\"The river had flooded twice that spring, and by May the lower fields were still soft.\", " +
+    "\"def add(a, b):\\n    return a + b\\n\"];" }));
+}
 let page = ctx.pages()[0] || await ctx.newPage();
 const watch = p => {
   p.on("pageerror", e => { errors.push(e.message); console.log(`${secs()}  [pageerror] ${e.message}`); });
