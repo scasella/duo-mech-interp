@@ -34,8 +34,18 @@ export function posture() {
   return navigator.devicePosture?.type || null;
 }
 
+// The on-screen keyboard shrinks the viewport's height (and Safari fires resize events) while the screen stays the
+// same. Layout decisions use the tallest height seen at the current width, so opening the keyboard never changes the
+// layout (a layout change can hide or move the field being typed in, which dismisses the keyboard).
+let stableW = 0, stableH = 0;
+function stableHeight(w, h) {
+  if (w !== stableW) { stableW = w; stableH = h; }
+  else stableH = Math.max(stableH, h);
+  return stableH;
+}
+
 export function measure() {
-  const w = innerWidth, h = innerHeight;
+  const w = innerWidth, h = stableHeight(innerWidth, innerHeight);
   const segs = segments();
   let mode = "narrow", axis = null, a = 0, b = 0;
   if (segs) {
@@ -72,8 +82,7 @@ export function watch(cb) {
     root.style.setProperty("--fold", `${gap}px`);
     cb(m);
   };
-  addEventListener("resize", apply);
-  window.visualViewport?.addEventListener("resize", apply);
+  addEventListener("resize", apply);  // not visualViewport: that resizes for the keyboard and for pinch zoom
   navigator.devicePosture?.addEventListener?.("change", apply);
   screen.orientation?.addEventListener?.("change", () => setTimeout(apply, 50));
   apply();

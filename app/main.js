@@ -41,13 +41,26 @@ let layoutMode = "narrow", lastMeasure = null;
 watch(m => {
   layoutMode = m.mode;
   lastMeasure = m;
-  // the composer sits under the neuron in side-by-side and narrow layouts, and on the deck (bottom pane) when stacked
-  const composer = $("#composer");
-  if (m.mode === "tall" || m.mode === "laptop") $("#browse").insertBefore(composer, $("#btabs"));
-  else $("#neuron").append(composer);
+  placeComposer();
   setPane(state.pane);
   map?.redraw();
 });
+
+// The composer sits under the neuron in side-by-side and narrow layouts, and on the deck (bottom pane) when stacked.
+// It moves only when it has to, and never while one of its fields has focus: moving a focused field in the DOM blurs
+// it, which dismisses the iOS keyboard.
+function placeComposer() {
+  const composer = $("#composer");
+  const stacked = layoutMode === "tall" || layoutMode === "laptop";
+  const home = stacked ? $("#browse") : $("#neuron");
+  if (composer.parentElement === home) return;
+  if (composer.contains(document.activeElement)) {
+    composer.addEventListener("focusout", () => setTimeout(placeComposer, 0), { once: true });
+    return;
+  }
+  if (stacked) home.insertBefore(composer, $("#btabs"));
+  else home.append(composer);
+}
 
 function setPane(p) {
   state.pane = p;
