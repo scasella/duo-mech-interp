@@ -275,6 +275,10 @@ FAMILIES = {
         "The wind blew from the {X}.", "They drove {X} for hours.", "The house faces {X}.",
         "Birds fly {X} in winter.", "The {X} side of the island is rocky.", "We hiked toward the {X}.",
         "The river flows {X}.", "The {X} gate was closed."]),
+    "time_unit": dict(order="linear", vals="second minute hour day week month year decade century".split(), templates=[
+        "It only took one {X}.", "We waited one {X} for the bus.", "The warranty lasts one {X}.",
+        "Give me one {X} to think.", "He was gone for one {X}.", "The process takes about one {X}.",
+        "It happens once every {X}.", "Prices doubled in one {X}."]),
     "planet": dict(order="linear", vals="Mercury Venus Earth Mars Jupiter Saturn Uranus Neptune".split(), templates=[
         "The probe flew past {X} last year.", "Scientists studied the surface of {X}.", "A mission to {X} is planned.",
         "The moons of {X} are fascinating.", "Light from {X} reached the telescope.", "We read a book about {X}.",
