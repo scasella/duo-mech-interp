@@ -1,72 +1,77 @@
 # Concept shapes with Qwen-Scope SAEs
 
-Looking for concepts that a language model stores as a *shape*, not a single direction. Examples are a circle of
-weekdays or a line of temperatures. The tools use Alibaba's public Qwen-Scope sparse autoencoders
-([`Qwen/SAE-Res-Qwen3.5-2B-Base-W32K-L0_50`](https://huggingface.co/Qwen/SAE-Res-Qwen3.5-2B-Base-W32K-L0_50)) on
-Qwen3.5-2B-Base. Each SAE is TopK-50 with 32,768 features, reading the residual stream at one of all 24 layers.
-No Qwen-Scope SAE exists for the 0.8B model the app runs. Shapes found in 2B are checked on 0.8B with template
-sentences instead (`local.py probe --model … --no-sae`).
+Looking for concepts that a language model stores as a *shape*, not a single direction: a circle of weekdays, a line of
+durations, a map of cities. The search runs on Qwen3.5-2B-Base, using Alibaba's public Qwen-Scope sparse autoencoders
+([`Qwen/SAE-Res-Qwen3.5-2B-Base-W32K-L0_50`](https://huggingface.co/Qwen/SAE-Res-Qwen3.5-2B-Base-W32K-L0_50)): TopK-50,
+32,768 features, residual stream, all 24 layers. Each finding is then checked on the 0.8B model the app runs, which
+has no SAE.
 
 ## Files
 
 | File | What it does |
 |---|---|
-| `core.py` | Model and SAE loading, the web-text harvest, and the probe families (shared by both entry points) |
-| `local.py` | Runs the steps on this machine (CPU is fine for the probes and for about 1M tokens) |
-| `modal_app.py` | The full run on a Modal GPU: probes, then harvest, then analysis; outputs go to the volume `qwen-scope-shapes` |
-| `analyze.py` | `probes`: known families. `groups`: unsupervised search for shapes |
+| `core.py` | Model and SAE loading; the web-text harvests (SAE codes and co-activation, or per-word averages); probe families |
+| `local.py` | The same steps on this machine (CPU is fine for the probes and for about 1M tokens) |
+| `modal_app.py` | GPU runs on Modal: `main` (probes + SAE harvest + analysis) and `::words` (per-word averages, any checkpoint) |
+| `analyze.py` | `probes` (known families), `groups` (SAE-feature grouping), `words` (word families and their shapes) |
+| `ordered_tests.py` | Do the found families line up with a real quantity (durations, volumes, intensity, digits, luck)? And a city map |
 
 ## Running
 
 ```sh
-# probes (known families) on 2B with SAEs, and on the app's 0.8B without
+# known families on 2B (with SAEs) and on the app's 0.8B (without)
 python tools/shapes/local.py probe --layers 6,12,18 --out runs/probe
 python tools/shapes/analyze.py probes --run runs/probe --layers 6,12,18
 python tools/shapes/local.py probe --model Qwen/Qwen3.5-0.8B --no-sae --layers 6,12,18 --out runs/probe08
 
-# web text: about 300 tokens/s on a 4-core CPU at layer 12, so 1M tokens takes about an hour
-python tools/shapes/local.py corpus --layers 12 --tokens 1000000 --store 4000 --seq 256 --out runs/cpu1m
-python tools/shapes/analyze.py groups --run runs/cpu1m --layers 12 --probe-run runs/probe
+# GPU (needs a Modal token; behind an HTTP proxy, install modal[api-proxy-support])
+modal run --detach tools/shapes/modal_app.py --run full --layers 6,12,18 --tokens 30000000 --store 4000
+modal run --detach tools/shapes/modal_app.py::words --run words30m --layers 6,12,18 --tokens 30000000
+modal run --detach tools/shapes/modal_app.py::words --run words08 --model Qwen/Qwen3.5-0.8B --tokens 30000000
+modal volume get qwen-scope-shapes runs/words30m ./runs/
 
-# GPU (needs MODAL_TOKEN_ID / MODAL_TOKEN_SECRET or `modal token set`)
-modal run tools/shapes/modal_app.py --run pilot --layers 12 --tokens 2000000
-modal run tools/shapes/modal_app.py --run full --layers 6,12,18 --tokens 20000000 --store 4000
-modal volume get qwen-scope-shapes runs/full ./runs/full
+python tools/shapes/analyze.py words --run runs/words30m --layers 12
+python tools/shapes/ordered_tests.py runs/words30m <hf cache or ""> ordered.json
 ```
 
-## How shapes are found
+An A100 harvests about 25,000 tokens/s with SAEs at three layers, and 30,000–36,000 tokens/s for word averages.
+30M tokens take 15–20 minutes.
 
-1. **Harvest.** Stream web text (FineWeb-Edu) through the model. At each layer, record which SAE features fire on
-   each token and how often every pair fires together (dense co-activation counts). Keep the full codes for the
-   first few thousand sequences.
-2. **Group.** Link two features when their decoder directions point the same way, or when they fire together more
-   than chance (normalised PMI). Features that fire on more than 0.5% of tokens are left out. Communities in this
-   graph (Louvain, split until at most 80 features each) are the candidate shapes.
-3. **Measure.** For each group, rebuild the residual from only that group's features on the tokens where it fires,
-   and take its PCA. Two numbers rank the groups:
-   - how much of the geometry is explained by which word the group fired on (variance between word centroids);
-   - how many dimensions those word centroids spread over (participation ratio).
+## What worked and what did not
 
-   Filler words are ignored when scoring.
-4. **Check.** The probe families come with a known order (weekdays, months, numbers, ordinals, seasons, times of
-   day, colours, temperatures, sizes, compass points, planets). For each one, the analysis tests:
-   - whether the model holds it in order;
-   - how many SAE features carry it;
-   - whether the reconstruction from only those features keeps the order;
-   - whether the grouping step puts those features together.
+- **Grouping SAE features did not find shapes.** The Qwen-Scope SAE has almost no features dedicated to one list.
+  Over 1M tokens of web text, no feature fires mainly on weekdays, and only four fire mainly on months. Each shape is
+  carried by about a hundred broad features. Grouping features by decoder direction or co-activation (`analyze.py
+  groups`) gave spelling clusters ("authority, authorities, author") rather than shapes, and scattered the weekday
+  features across groups.
+- **Word families worked.** `harvest_centroids` averages the residual of every frequent word over the text. `analyze.py
+  words` links words to their nearest neighbours (after removing the shared mean and two main axes, and merging case
+  and plural variants) and splits them into families. With no labels, weekdays (7/7), months (12/12), number words,
+  ordinals, colours, seasons and compass points each came out as one family. New families appeared next to them:
+  digits, tens, units, ordering words ("firstly, secondly, lastly"), stance adverbs and place names.
 
-## First results (CPU, probe sentences)
+## Results
 
-- **2B:** weekdays sit on a circle in the right order at layers 6, 12 and 18 (chance about 0.3%), and months do too
-  (chance about 5e-8). Numbers, ordinals, temperatures and sizes lie on a line in order. Colours, seasons and compass
-  points do not come out in their natural order.
-- **The SAE spreads each shape over many features:** 36–160 value-specific features per family, plus 35–80 broad
-  ones. The reconstruction from only those features keeps the weekday and month circles at layers 6 and 12, but
-  not at 18.
-- **A shared position code.** Several SAE features fire on the *k*-th item of every list. Feature 330 fires on
-  Thursday, April, four and fourth; feature 13888 on Friday, May, five and fifth; feature 1348 on July, seven and
-  seventh. In the raw residuals, value *i* of one family is nearest to value *i* of another:
-  - 100% of the time for every pair of weekday, month, number and ordinal, at layers 6, 12 and 18 (chance 8–14%);
-  - still 57–80% after removing the three main shared axes, so this is more than a single frequency line.
+**Probe sentences (2B; same on 0.8B):**
+- Weekdays and months sit on circles in the right order at layers 6, 12 and 18.
+- Numbers, ordinals, temperatures and sizes lie on lines in order.
+- Colours, seasons and compass points do not follow their natural order.
 
-  The app's 0.8B model has the same code (86–100% at layers 6–18).
+**A shared position code.** Weekdays, months, numbers and ordinals share one code: in the residuals, value *i* of one
+list is nearest to value *i* of another.
+- 2B matches 100% of the time for every pair at all three layers (chance 8–14%).
+- 2B still matches 57–80% after removing the three main shared axes.
+- 0.8B matches 86–100%.
+- It is causal in 0.8B. Adding "four minus one" taken from number sentences to "Monday" in "Today is Monday.
+  Tomorrow is" turns the answer into "Friday" 57–71% of the time, against 0–7% for a random push.
+
+**Found in web text** (2B, layer 12, rank correlation on the best of the top three axes):
+
+| Shape | Rank correlation |
+|---|---|
+| Units of time (second … century) | 0.98 |
+| Intensity adverbs (slightly … drastically) | 0.90 |
+| Units of volume (teaspoon … barrel) | 0.73 |
+| Digits 0–9 | 0.62 (0.84 at layer 6) |
+| Luck adverbs (fortunately vs unfortunately) | 0.77 |
+| City map (held-out linear readout) | latitude r 0.60, longitude r 0.82 (shuffled baseline about 0.15) |
