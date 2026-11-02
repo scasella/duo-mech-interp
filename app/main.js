@@ -4,6 +4,10 @@ import { Explorer } from "../engine/analysis.js";
 import { watch } from "./layout.js";
 import { createMap } from "./map.js";
 import { CORPUS } from "./corpus.js";
+import { EXAMPLES } from "./examples.js";
+
+// Two places: Steer (ask once, compare three answers) and Explore (Neuron · Find · Browse). On the inner display they
+// face each other across the fold; on the outer display they are two tabs.
 
 const Q = new URLSearchParams(location.search);
 const REPO = Q.get("model") || "Qwen/Qwen3.5-0.8B";
@@ -12,28 +16,36 @@ if (Q.get("hub")) setHubBase(HUB);
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
-const fmt = (x, d = 2) => (x >= 0 ? "+" : "−") + Math.abs(x).toFixed(d);
-const ADD_STEPS = [...Array.from({ length: 30 }, (_, i) => +((i + 1) * 0.05).toFixed(2)), 1.75, 2, 2.5, 3, 4, 5];
-const MUL_STEPS = [...Array.from({ length: 9 }, (_, i) => i * 0.5), 5, 6, 8, 12, 16];
+const show = t => t.replace(/\n/g, "⏎").replace(/^ +$/, m => "␣".repeat(m.length)).replace(/\t/g, "⇥");
+const SUGGESTIONS = ["Who are you?", "What do you love most?", "Describe the ocean.", "Tell me a short story."];
+const RANGE = { add: { max: 2, step: 0.05 }, mul: { max: 8, step: 0.5 } };
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("duo." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("duo." + k, JSON.stringify(v)); } catch {} },
 };
+const key = (l, n) => `L${l}/N${n}`;
+const parseKey = k => { const m = /L(\d+)\/N(\d+)/.exec(k); return m ? { layer: +m[1], n: +m[2] } : null; };
 
+const names0 = store.get("names", {});
 const state = {
   focus: null,
-  history: [],
-  hpos: -1,
-  chat: { mode: "add", dir: "writes", dose: { add: 0.8, mul: 2 }, rows: [[], [], []] },
-  names: store.get("names", {}),
+  mode: "add",
+  dose: { add: 0.8, mul: 2 },
+  keep: false,
+  rows: [[], [], []],
+  lastQ: null,
+  names: names0,
+  saved: store.get("saved", Object.keys(names0).filter(k => names0[k])),
   recent: store.get("recent", []),
-  run: null,
-  runPos: -1,
-  pane: "browse",
+  pane: "steer",
+  xtab: "find",
+  find: null, findPos: -1, findSign: "both",
 };
 let ex = null, model = null, tok = null, map = null;
-let job = null;  // {cancel} of the running steer
+let job = null;            // the running steer: {cancel}
+let calibration = null;    // promise of the background calibration
+let calFrac = 0;
 
 // ---------- layout ----------
 
@@ -46,87 +58,79 @@ watch(m => {
   map?.redraw();
 });
 
-// The composer sits under the neuron in side-by-side and narrow layouts, and on the deck (bottom pane) when stacked.
-// It moves only when it has to, and never while one of its fields has focus: moving a focused field in the DOM blurs
-// it, which dismisses the iOS keyboard.
+// The question box sits under the answers, except in portrait (stacked) layouts where it lives on the deck. It moves
+// only when it has to and never while focused: moving a focused field blurs it, which closes the iOS keyboard.
 function placeComposer() {
-  const composer = $("#composer");
+  const c = $("#composer");
   const stacked = layoutMode === "tall" || layoutMode === "laptop";
-  const home = stacked ? $("#browse") : $("#neuron");
-  if (composer.parentElement === home) return;
-  if (composer.contains(document.activeElement)) {
-    composer.addEventListener("focusout", () => setTimeout(placeComposer, 0), { once: true });
-    return;
-  }
-  if (stacked) home.insertBefore(composer, $("#btabs"));
-  else home.append(composer);
+  const home = stacked ? $("#explore") : $("#steer");
+  if (c.parentElement === home) return;
+  if (c.contains(document.activeElement)) { c.addEventListener("focusout", () => setTimeout(placeComposer, 0), { once: true }); return; }
+  if (stacked) home.insertBefore(c, home.firstElementChild); else home.append(c);
 }
 
+const narrow = () => layoutMode === "narrow";
 function setPane(p) {
   state.pane = p;
-  $$("#panes button").forEach(b => b.classList.toggle("on", b.dataset.p === p));
-  $("#browse").classList.toggle("active", p === "browse");
-  $("#neuron").classList.toggle("active", p === "neuron");
-  if (p === "browse") map?.redraw();
+  $$("#tabbar button").forEach(b => b.classList.toggle("on", b.dataset.p === p));
+  $("#steer").classList.toggle("active", p === "steer");
+  $("#explore").classList.toggle("active", p === "explore");
+  if (p === "explore" && state.xtab === "browse") map?.redraw();
 }
-$$("#panes button").forEach(b => (b.onclick = () => setPane(b.dataset.p)));
+$$("#tabbar button").forEach(b => (b.onclick = () => setPane(b.dataset.p)));
 
-function setBTab(t) {
-  $$("#btabs button").forEach(b => b.classList.toggle("on", b.dataset.bt === t));
-  $$(".bpane").forEach(p => p.classList.toggle("on", p.id === "bt-" + t));
-  if (t === "map") map?.redraw();
-  if (t === "list") renderList();
+function setXTab(t) {
+  state.xtab = t;
+  $$("#xtabs button").forEach(b => { b.classList.toggle("on", b.dataset.x === t); b.setAttribute("aria-selected", b.dataset.x === t); });
+  $$(".xpane").forEach(p => p.classList.toggle("on", p.id === "x-" + t));
+  if (t === "browse") { renderSaved(); map?.redraw(); }
 }
-$$("#btabs button").forEach(b => (b.onclick = () => setBTab(b.dataset.bt)));
+$$("#xtabs button").forEach(b => (b.onclick = () => setXTab(b.dataset.x)));
 
-function setNTab(t) {
-  $$("#ntabs button").forEach(b => b.classList.toggle("on", b.dataset.nt === t));
-  $$(".npane").forEach(p => p.classList.toggle("on", p.id === "nt-" + t));
-  $("#composer").style.display = t === "chat" ? "" : "none";
-  if (t === "lens") renderLens();
-  if (t === "examples") renderExamples();
+// ---------- feedback ----------
+
+let toastTimer;
+function toast(msg, action) {
+  const t = $("#toast");
+  t.innerHTML = `<span>${esc(msg)}</span>` + (action ? `<button type="button">${esc(action.label)}</button>` : "");
+  if (action) t.querySelector("button").onclick = () => { t.hidden = true; action.run(); };
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.hidden = true), action ? 9000 : 4000);
 }
-$$("#ntabs button").forEach(b => (b.onclick = () => setNTab(b.dataset.nt)));
+const fail = (what, err) => { console.error(err); toast(`${what}: ${err?.message || err}`); };
 
-// ---------- status ----------
-
-let statusText = "";
-function status(s) { statusText = s; paintStatus(); }
-function paintStatus() {
-  const mem = model ? ` · ${(model.gpu.bytes / 1e6).toFixed(0)} MB` : "";
-  $("#status").textContent = (statusText || (model ? "ready" : "")) + mem;
-}
-
-// ---------- boot ----------
+// ---------- welcome / loading ----------
 
 async function boot() {
   const facts = [];
-  const fail = msg => { $("#boot-err").hidden = false; $("#boot-err").textContent = msg; };
-  if (!navigator.gpu) {
-    fail("This browser has no WebGPU. On iPhone it needs iOS 26 or later (Safari 26+). On a desktop, use a recent Chrome, Edge or Safari.");
-    $("#boot-go").disabled = true;
-    return;
-  }
+  const stop = msg => { $("#w-err").hidden = false; $("#w-err").textContent = msg; $("#w-go").disabled = true; };
+  if (!navigator.gpu) return stop("This browser can't run the model: it has no WebGPU. On iPhone, use Safari on iOS 26 or later.");
   const adapter = await navigator.gpu.requestAdapter();
-  if (!adapter) { fail("WebGPU is present but no GPU adapter is available."); $("#boot-go").disabled = true; return; }
+  if (!adapter) return stop("WebGPU is present, but no GPU is available to it.");
   const lim = adapter.limits, info = adapter.info || {};
-  facts.push(`GPU: ${[info.vendor, info.architecture].filter(Boolean).join(" ") || "available"}; max buffer ${(lim.maxStorageBufferBindingSize / 2 ** 20) | 0} MiB`);
-  facts.push("Model: Qwen3.5-0.8B (Apache-2.0), 24 layers: 18 Gated DeltaNet + 6 gated attention, SwiGLU MLP, 3,584 neurons per layer");
-  facts.push("Weights: int8 on the GPU, about 0.8 GB. First load streams 1.5 GB from Hugging Face; later loads read the copy kept in this browser");
+  if (lim.maxStorageBufferBindingSize < 255 * 2 ** 20) return stop("This device's GPU buffers are too small for the model.");
   const lm = lastMeasure;
-  facts.push(`Layout: ${lm.mode}` + (lm.segmented ? ", fold from the Viewport Segments API" :
-    lm.mode === "narrow" ? "" : ", fold assumed at the middle (Safari › Advanced › Feature Flags › Viewport Segments API gives the exact fold)"));
-  if (lim.maxStorageBufferBindingSize < 255 * 2 ** 20) fail("This GPU's storage buffers are too small for the embedding table (needs 243 MiB).");
+  facts.push("Model: Qwen3.5-0.8B (Apache-2.0), 24 layers × 3,584 MLP neurons; the text decoder only.");
+  facts.push("Runs on this device with WebGPU (int8 weights, about 0.8 GB of GPU memory). Nothing you type leaves the phone.");
+  facts.push(`GPU: ${[info.vendor, info.architecture].filter(Boolean).join(" ") || "available"}.`);
+  facts.push(`Screen: ${lm.mode} layout` + (lm.segmented ? ", fold reported by Safari." : lm.mode === "narrow" ? "." :
+    ". For the exact fold position, turn on Settings › Apps › Safari › Advanced › Feature Flags › Viewport Segments API."));
+  facts.push("A port of lyramakesmusic/neuron-explorer.");
+  $("#w-facts").innerHTML = facts.map(f => `<li>${esc(f)}</li>`).join("");
   const cached = await hasCache();
-  if (cached) { facts.push("Weights are already stored in this browser."); $("#boot-go").textContent = "Open"; $("#boot-clear").hidden = false; }
-  $("#boot-facts").innerHTML = facts.map(f => `<li>${esc(f)}</li>`).join("");
-  $("#boot-go").onclick = () => load().catch(e => { console.error(e); fail(String(e.message || e)); $("#boot-go").disabled = false; });
-  $("#boot-clear").onclick = async () => {
+  $("#w-go").onclick = () => load(cached).catch(e => { console.error(e); $("#w-err").hidden = false; $("#w-err").textContent = String(e.message || e); $("#w-go").disabled = false; $("#w-progress").hidden = true; });
+  $("#w-forget").onclick = async () => {
     await Model.clearCache(REPO); await caches.delete(calName());
     try { localStorage.removeItem(`duo.residP50:${REPO}:q8v1`); } catch {}
     location.reload();
   };
-  if (cached || Q.has("autoload")) $("#boot-go").click();
+  if (cached) {
+    $("#w-forget").hidden = false;
+    $("#w-go").textContent = "Open";
+    $("#w-note").textContent = "The model is already on this device.";
+  }
+  if (cached || Q.has("autoload")) $("#w-go").click();
 }
 
 async function hasCache() {  // caches.open would create the cache, so look before opening
@@ -134,387 +138,550 @@ async function hasCache() {  // caches.open would create the cache, so look befo
   try { return (await caches.has(name)) && !!(await (await caches.open(name)).match("/w/complete")); } catch { return false; }
 }
 
-async function load() {
-  $("#boot-go").disabled = true;
-  $("#boot-progress").hidden = false;
-  const bar = $(".bar-in"), msg = $("#boot-msg");
+async function load(cached) {
+  $("#w-go").hidden = true;
+  $("#w-note").hidden = true;
+  $("#w-progress").hidden = false;
+  const bar = $(".meter i"), msg = $("#w-msg");
   const t0 = performance.now();
+  msg.textContent = cached ? "Opening…" : "Starting download…";
   const tokP = Tokenizer.fromUrl(`${HUB}/${REPO}/resolve/main/tokenizer.json`);
   model = await Model.load(REPO, {
     cache: !Q.has("nocache"),
     onProgress: p => {
       bar.style.width = `${(p.frac * 100).toFixed(1)}%`;
-      const secs = ((performance.now() - t0) / 1000).toFixed(0);
-      if (p.phase === "download") msg.textContent = `streaming weights ${(p.bytes / 1e9).toFixed(2)} / ${(p.total / 1e9).toFixed(2)} GB · ${secs}s`;
-      else if (p.phase === "cache") msg.textContent = `reading stored weights ${(p.frac * 100).toFixed(0)}%`;
-      else if (p.phase === "caching") msg.textContent = `storing weights in this browser for next time ${(p.frac * 100).toFixed(0)}%`;
+      if (p.phase === "download") {
+        const el = (performance.now() - t0) / 1000, rate = p.bytes / Math.max(el, 1);
+        const left = Math.max(0, (p.total - p.bytes) / Math.max(rate, 1));
+        msg.textContent = `Downloading ${(p.bytes / 1e9).toFixed(2)} of ${(p.total / 1e9).toFixed(2)} GB` + (el > 5 ? ` · about ${left > 90 ? Math.round(left / 60) + " min" : Math.round(left) + " s"} left` : "");
+      } else if (p.phase === "cache") msg.textContent = "Opening…";
+      else if (p.phase === "caching") msg.textContent = "Saving to this device for next time…";
     },
   });
-  msg.textContent = "tokenizer…";
   tok = await tokP;
   model.alloc(3, 1024, 128);
   ex = new Explorer(model, tok);
-  // dose units (median residual norm leaving each layer) depend only on the weights: measured once, then remembered
+  // dose units depend only on the weights: measured once, then remembered
   const unitsKey = `residP50:${REPO}:q8v1`;
   const known = store.get(unitsKey, null);
   if (Array.isArray(known) && known.length === model.L) ex.residP50 = known;
-  else { msg.textContent = "measuring dose units…"; store.set(unitsKey, await ex.init()); }
+  else { msg.textContent = "Getting ready (first time only)…"; store.set(unitsKey, await ex.init()); }
   await loadCalibration();
-  model.gpu.device.lost.then(i => status("GPU lost: " + (i.message || i.reason) + " — reload"));
-  $("#boot").hidden = true;
+  model.gpu.device.lost.then(() => toast("The GPU was reset (was the app in the background?).", { label: "Reload", run: () => location.reload() }));
+  $("#welcome").hidden = true;
   start();
 }
 
-// ---------- main ----------
+// ---------- start ----------
 
 function start() {
   map = createMap($("#map"), {
     L: model.L, I: model.I, types: model.types,
-    onOpen: (l, n) => openNeuron(l, n),
+    onOpen: (l, n) => openNeuron(l, n, { go: "steer" }),
     onPreview: previewNeuron,
     onLayer: l => {
       previewNeuron(null);
-      $("#map-legend").textContent = l == null ? "tap a layer to see its sheet, then drag across neurons to preview" : "drag across the sheet to preview, release to open · tap the title to go back";
+      $("#map-legend").textContent = l == null ? "Each band is one of the 24 layers. Tap a band, then slide across it."
+        : "Slide across the sheet to preview a neuron; lift to open it. Tap the title to go back.";
     },
   });
-  map.setMarks(markSet());
-  paintStatus();
+  map.setMarks(new Set(state.saved.map(k => { const f = parseKey(k); return `${f.layer}:${f.n}`; })));
   showWeightMap();
+  renderStrength();
   const h = parseHash();
   const f = h || store.get("focus", null);
-  if (f) openNeuron(f.layer, f.n, { pane: false });
-  else { renderChatHeads(); $("#f-meta").textContent = "open one from the map, the list, or type L12 N1234 above"; }
-  renderRunCal();
-}
-
-// Until a text is run, the map shows each neuron's |down column| relative to its layer (grey-blue).
-async function showWeightMap() {
-  const v = await ex.writeNorms();
-  if (state.run) return;
-  const ov = new Float32Array(v.length), I = model.I;
-  for (let l = 0; l < model.L; l++) {
-    const row = Array.from(v.subarray(l * I, (l + 1) * I)).sort((a, b) => a - b);
-    const lo = row[Math.floor(I * 0.5)], hi = row[Math.floor(I * 0.999)];
-    for (let n = 0; n < I; n++) ov[l * I + n] = Math.max(0, (v[l * I + n] - lo) / Math.max(1e-6, hi - lo));
-  }
-  map.setOverlay(ov, { neutral: true });
-  $("#map-legend").textContent = "brightness: how hard each neuron can write (|down column|, per layer) · tap a layer for its sheet";
+  if (f) openNeuron(f.layer, f.n, { go: null });
+  else renderEmpty();
+  if (!ex.scale) setTimeout(() => (calibration ||= runCalibration()), 1500);
 }
 
 function parseHash() {
   const m = /L(\d+)\D*N?(\d+)/i.exec(location.hash);
   return m ? { layer: +m[1], n: +m[2] } : null;
 }
-addEventListener("hashchange", () => { const h = parseHash(); if (h && ex) openNeuron(h.layer, h.n); });
+addEventListener("hashchange", () => { const h = parseHash(); if (h && ex && (h.layer !== state.focus?.layer || h.n !== state.focus?.n)) openNeuron(h.layer, h.n); });
 
-$("#jump").addEventListener("keydown", e => {
-  if (e.key !== "Enter") return;
-  const m = /L?\s*(\d+)\D+N?\s*(\d+)/i.exec(e.target.value);
-  if (m) { openNeuron(+m[1], +m[2]); e.target.blur(); }
-});
+// ---------- steer ----------
 
-const key = (l, n) => `L${l}/N${n}`;
-const markSet = () => new Set(Object.keys(state.names).filter(k => state.names[k]).map(k => { const m = /L(\d+)\/N(\d+)/.exec(k); return `${m[1]}:${m[2]}`; }));
+const label = (l, n) => state.names[key(l, n)] || `Neuron ${n}`;
 
-// ---------- preview (map hover / scrub) ----------
-
-let prevGen = 0;
-async function previewNeuron(p) {
-  const tip = $("#map-tip");
-  const g = ++prevGen;
-  if (!p) { tip.hidden = true; return; }
-  const name = state.names[key(p.layer, p.n)];
-  tip.hidden = false;
-  tip.style.left = `${Math.min(p.x + 14, $("#map").clientWidth - 200)}px`;
-  tip.style.top = `${Math.max(4, p.y - 60)}px`;
-  tip.innerHTML = `<b>L${p.layer} N${p.n}</b>${name ? " · " + esc(name) : ""}`;
-  await new Promise(r => setTimeout(r, 120));  // scrubbing: only look up the cell the finger rests on
-  if (g !== prevGen) return;
-  const lens = await ex.lens(p.layer, p.n, 6);
-  if (g !== prevGen) return;
-  tip.innerHTML += `<div class="up">+ ${lens.up.map(t => esc(show(t))).join("  ")}</div><div class="down">− ${lens.down.map(t => esc(show(t))).join("  ")}</div>`;
+function renderHeader() {
+  const f = state.focus;
+  $("#who-name").textContent = f ? label(f.layer, f.n) : "Choose a neuron";
+  $("#who-sub").textContent = f ? (state.names[key(f.layer, f.n)] ? `Neuron ${f.n} · layer ${f.layer}` : `Layer ${f.layer} of ${model.L}`) : "";
+  $("#save").hidden = !f;
+  const saved = f && state.saved.includes(key(f.layer, f.n));
+  $("#save").textContent = saved ? "★" : "☆";
+  $("#save").classList.toggle("on", !!saved);
+  $("#save").setAttribute("aria-label", saved ? "Remove from your neurons" : "Save this neuron");
 }
 
-const show = t => t.replace(/\n/g, "⏎").replace(/^ +$/, m => "␣".repeat(m.length)).replace(/\t/g, "⇥");
+$("#who").onclick = () => { setXTab("about"); if (narrow()) setPane("explore"); };
+$("#save").onclick = () => {
+  const f = state.focus; if (!f) return;
+  const k = key(f.layer, f.n);
+  state.saved = state.saved.includes(k) ? state.saved.filter(x => x !== k) : [k, ...state.saved];
+  store.set("saved", state.saved);
+  renderHeader(); renderSaved();
+  map?.setMarks(new Set(state.saved.map(x => { const p = parseKey(x); return `${p.layer}:${p.n}`; })));
+  toast(state.saved.includes(k) ? "Saved to Your neurons (Explore › Browse)." : "Removed from Your neurons.");
+};
 
-// ---------- neuron ----------
+function renderEmpty() {
+  const f = state.focus, e = $("#empty");
+  const hasAnswers = state.rows[0].length > 0;
+  $("#lanes").hidden = !hasAnswers;
+  e.hidden = hasAnswers;
+  $("#composer").hidden = !f;
+  renderSuggest();
+  if (hasAnswers) return;
+  if (!f) {
+    e.innerHTML = `<h2>Choose a neuron to start</h2>
+      <p>You ask a question once. The model answers three times: with the neuron <b class="up">boosted</b>, left <b>as is</b>, and <b class="down">suppressed</b>.</p>
+      <button id="try-example" class="primary" type="button">Try an example</button>
+      <button id="go-find" class="secondary" type="button">Find neurons in your own words</button>
+      <button id="surprise" class="link" type="button">Surprise me</button>`;
+  } else {
+    e.innerHTML = `<h2>Ask ${esc(label(f.layer, f.n))} something</h2>
+      <p>Pick a question below or type your own. You'll see its answer with this neuron <b class="up">boosted</b>, <b>as is</b>, and <b class="down">suppressed</b>.</p>` +
+      (state.lastQ ? `<button id="ask-again" class="primary" type="button">Ask “${esc(state.lastQ)}”</button>` : "") +
+      `<button id="surprise" class="link" type="button">Try another neuron</button>`;
+  }
+  $("#try-example")?.addEventListener("click", tryExample);
+  $("#go-find")?.addEventListener("click", () => { setXTab("find"); if (narrow()) setPane("explore"); setTimeout(() => $("#find-text").focus(), 50); });
+  $("#surprise")?.addEventListener("click", surprise);
+  $("#ask-again")?.addEventListener("click", () => ask(state.lastQ));
+}
 
-async function openNeuron(layer, n, { pane = true, push = true } = {}) {
-  if (!ex || layer < 0 || layer >= model.L || n < 0 || n >= model.I) return;
+function renderSuggest() {
+  const show = state.focus && !job && state.rows[0].length === 0;
+  $("#suggest").innerHTML = show ? SUGGESTIONS.map(s => `<button type="button">${esc(s)}</button>`).join("") : "";
+  $("#suggest").hidden = !show;
+}
+$("#suggest").addEventListener("click", e => { const b = e.target.closest("button"); if (b) ask(b.textContent); });
+
+let exampleIdx = 0;
+function tryExample() {
+  const x = EXAMPLES[exampleIdx++ % EXAMPLES.length];
+  state.dose.add = x.dose ?? 0.8;
+  renderStrength();
+  openNeuron(x.layer, x.n, { go: "steer" });
+  ask(x.prompt);
+}
+
+function surprise() {
+  const l = 6 + Math.floor(Math.random() * 13), n = Math.floor(Math.random() * model.I);  // middle layers steer most visibly
+  openNeuron(l, n, { go: "steer" });
+  if (state.lastQ) ask(state.lastQ);
+}
+
+function doseText(r) {
+  const d = state.dose[state.mode];
+  if (state.mode === "mul") return r === 0 ? `×${d}` : `×${-d}`;
+  return r === 0 ? `+${d}` : `−${d}`;
+}
+function renderStrength() {
+  const s = $("#strength"), rg = RANGE[state.mode];
+  s.max = rg.max; s.step = rg.step; s.value = state.dose[state.mode];
+  $("#strength-v").textContent = state.mode === "mul" ? `×${state.dose.mul}` : state.dose.add;
+  $$(".lane .dose").forEach((el, i) => (el.textContent = doseText(i === 0 ? 0 : 2)));
+  $$("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === state.mode));
+}
+$("#strength").addEventListener("input", e => { state.dose[state.mode] = +(+e.target.value).toFixed(2); renderStrength(); });
+
+async function openNeuron(layer, n, { go = "steer" } = {}) {
+  if (!ex || !(layer >= 0 && layer < model.L && n >= 0 && n < model.I)) return;
   stopJob();
   state.focus = { layer, n };
   store.set("focus", state.focus);
-  if (push) {
-    state.history = state.history.slice(0, state.hpos + 1).concat([{ layer, n }]);
-    state.hpos = state.history.length - 1;
-  }
-  state.recent = [{ layer, n }, ...state.recent.filter(r => r.layer !== layer || r.n !== n)].slice(0, 40);
+  state.recent = [{ layer, n }, ...state.recent.filter(r => r.layer !== layer || r.n !== n)].slice(0, 30);
   store.set("recent", state.recent);
   history.replaceState(null, "", `#L${layer}N${n}`);
-  $("#f-id").textContent = `L${layer} N${n}`;
-  $("#f-name").value = state.names[key(layer, n)] || "";
-  sizeName();
-  $("#f-meta").textContent = `${model.types[layer] === "full_attention" ? "full attn" : "linear attn"} layer`;
-  state.chat.rows = [[], [], []];
-  renderThread();
-  renderChatHeads();
-  $("#c-reads").innerHTML = "";
-  $("#c-reads").hidden = state.chat.dir !== "reads";
-  $("#c-lens").innerHTML = "";
-  map.setFocus({ layer, n });
-  map.setWeb(null);
-  if (pane && layoutMode === "narrow") setPane("neuron");
-  const cur = () => state.focus && state.focus.layer === layer && state.focus.n === n;
-  if ($("#ntabs .on").dataset.nt !== "chat") setNTab($("#ntabs .on").dataset.nt);
+  state.rows = [[], [], []];
+  renderHeader();
+  renderLanes();
+  renderEmpty();
+  renderAbout();
+  map?.setFocus({ layer, n });
+  map?.setWeb(null);
+  if (go && narrow()) setPane(go === "about" ? "explore" : "steer");
+  if (go === "about") setXTab("about");
   try {
-    const lens = await ex.lens(layer, n, 10);
-    if (!cur()) return;
-    $("#c-lens").innerHTML = `<span class="up">+</span><div class="chips">${chips(lens.up)}</div><span class="down">−</span><div class="chips">${chips(lens.down)}</div>`;
-    const unit = await ex.doseValue(layer, n, 1, "add");
-    if (!cur()) return;
-    $("#f-meta").textContent = `${model.types[layer] === "full_attention" ? "full attn" : "linear attn"} · dose 1 = ${unit.toFixed(2)} act`;
     const con = await ex.connections(layer, n, 12);
-    if (!cur()) return;
-    map.setWeb({ up: con.up.slice(0, 6), down: con.down.slice(0, 6) });
-  } catch (err) {
-    console.error(err);
-    status("error: " + (err.message || err));
-  }
+    if (state.focus?.layer === layer && state.focus?.n === n) map?.setWeb({ up: con.up.slice(0, 6), down: con.down.slice(0, 6) });
+  } catch (err) { console.error(err); }
 }
-
-const chips = list => list.map(t => `<span class="chip">${esc(show(t))}</span>`).join("");
-
-$("#f-prev").onclick = () => { if (state.hpos > 0) { const f = state.history[--state.hpos]; openNeuron(f.layer, f.n, { push: false }); } };
-$("#f-next").onclick = () => { if (state.hpos < state.history.length - 1) { const f = state.history[++state.hpos]; openNeuron(f.layer, f.n, { push: false }); } };
-
-function sizeName() { const t = $("#f-name"); t.style.height = "auto"; t.style.height = `${t.scrollHeight}px`; }
-$("#f-name").addEventListener("input", e => {
-  sizeName();
-  if (!state.focus) return;
-  const k = key(state.focus.layer, state.focus.n);
-  if (e.target.value.trim()) state.names[k] = e.target.value; else delete state.names[k];
-  store.set("names", state.names);
-  map?.setMarks(markSet());
-});
-
-// ---------- chat: steer (writes) and read (reads you) ----------
-
-function doseLabel(r) {
-  const c = state.chat, d = c.dose[c.mode];
-  if (c.mode === "mul") return r === 0 ? `▲ ×${d}` : r === 1 ? "×1" : `▼ ×−${d}`;
-  return r === 0 ? `▲ +${d}` : r === 1 ? "0" : `▼ −${d}`;
-}
-function renderChatHeads() {
-  $$("#c-thread .colhead").forEach((h, r) => (h.innerHTML = `<span>${doseLabel(r)}</span><span class="tps"></span>`));
-}
-function renderThread() {
-  $$("#c-thread .col").forEach((col, r) => {
-    const msgs = state.chat.rows[r];
-    let html = "";
-    for (let i = 0; i < msgs.length; i += 2) {
-      const a = msgs[i + 1];
-      html += `<div class="turn"><div class="q">${esc(msgs[i].content)}</div><div class="a${a?.live ? " live" : ""}">${esc(a?.content || "")}</div></div>`;
-    }
-    col.querySelector(".turns").innerHTML = html || `<div class="dim" style="font-size:12px">${r === 1 ? "unsteered" : r === 0 ? "neuron pushed up" : "neuron pushed down"}</div>`;
-  });
-}
-function showDose() { const c = state.chat; $("#c-dose").value = c.mode === "mul" ? `×${c.dose.mul}` : c.dose.add; renderChatHeads(); }
-$$("#c-mode button").forEach(b => (b.onclick = () => {
-  state.chat.mode = b.dataset.m;
-  $$("#c-mode button").forEach(x => x.classList.toggle("on", x === b));
-  showDose();
-}));
-$$("#c-dir button").forEach(b => (b.onclick = () => {
-  state.chat.dir = b.dataset.d;
-  $$("#c-dir button").forEach(x => x.classList.toggle("on", x === b));
-  const reads = state.chat.dir === "reads";
-  $("#c-thread").hidden = reads; $("#c-dots").style.visibility = reads ? "hidden" : "";
-  $("#c-reads").hidden = !reads;
-  $("#c-input").placeholder = reads ? "Type text: see where this neuron fires" : "Who are you?";
-  $("#c-go").textContent = reads ? "read" : "run";
-}));
-function step(dir) {
-  const c = state.chat, steps = c.mode === "mul" ? MUL_STEPS : ADD_STEPS, cur = c.dose[c.mode];
-  let i = steps.findIndex(s => s >= cur - 1e-9);
-  if (i < 0) i = steps.length - 1;
-  if (dir > 0) i = steps[i] > cur + 1e-9 ? i : Math.min(steps.length - 1, i + 1);
-  else i = Math.max(0, steps[i] < cur - 1e-9 ? i : i - 1);
-  c.dose[c.mode] = steps[i];
-  showDose();
-}
-$("#c-minus").onclick = () => step(-1);
-$("#c-plus").onclick = () => step(1);
-$("#c-dose").addEventListener("change", e => {
-  const v = parseFloat(String(e.target.value).replace("×", ""));
-  if (isFinite(v) && v >= 0) state.chat.dose[state.chat.mode] = v;
-  showDose();
-});
-$("#c-clear").onclick = () => { stopJob(); state.chat.rows = [[], [], []]; renderThread(); $("#c-reads").innerHTML = ""; };
 
 function stopJob() { if (job) job.cancel.stop = true; }
 
-$("#composer").addEventListener("submit", async e => {
+function renderLanes() {
+  const rows = state.rows;
+  const keep = state.keep;
+  $("#asked").innerHTML = !keep && rows[0].length ? `You asked <b>${esc(rows[0][rows[0].length - 2].content)}</b>` : "";
+  $$(".lane").forEach((lane, r) => {
+    const msgs = rows[r], say = lane.querySelector(".say");
+    let html = "";
+    for (let i = keep ? 0 : Math.max(0, msgs.length - 2); i < msgs.length; i += 2) {
+      if (keep) html += `<span class="q">${esc(msgs[i].content)}</span>`;
+      html += esc(msgs[i + 1]?.content || "");
+    }
+    say.innerHTML = html;
+    const last = msgs[msgs.length - 1];
+    say.classList.toggle("live", !!last?.live);
+    say.classList.toggle("wait", !!last?.live && !last.content);
+    if (last?.live && !last.content) say.textContent = "thinking…";
+  });
+  renderStrength();
+}
+
+$("#composer").addEventListener("submit", e => {
   e.preventDefault();
-  if (!ex || !state.focus) return;
-  const text = $("#c-input").value.trim() || $("#c-input").placeholder;
-  if (state.chat.dir === "reads") return runReads(text);
   if (job) { stopJob(); return; }
-  const { layer, n } = state.focus, c = state.chat;
-  // this run writes into its own rows: opening another neuron or "clear" replaces state.chat.rows, and the run (which
-  // stops at its next token) must not touch the new ones
-  const rows = c.rows;
-  const live = () => state.chat.rows === rows;
-  $("#c-input").value = "";
+  const text = $("#prompt").value.trim();
+  if (text) ask(text);
+});
+
+async function ask(text) {
+  if (!ex || !state.focus) return;
+  if (job) { stopJob(); await job.done; }
+  const { layer, n } = state.focus;
+  state.lastQ = text;
+  // each run writes into its own rows: opening another neuron replaces state.rows, and the run (which stops at its
+  // next token) must not touch the new ones
+  const rows = state.keep ? state.rows : (state.rows = [[], [], []]);
+  const live = () => state.rows === rows;
   for (let r = 0; r < 3; r++) rows[r].push({ role: "user", content: text }, { role: "assistant", content: "", live: true });
-  renderThread();
+  $("#prompt").value = "";
+  $("#prompt").blur();
+  renderEmpty();
+  renderLanes();
   const cancel = { stop: false };
-  job = { cancel };
-  $("#c-go").textContent = "stop";
-  const t0 = performance.now();
-  let ntok = 0;
-  const els = $$("#c-thread .col").map(col => [...col.querySelectorAll(".turn .a")].pop());
+  let release;
+  job = { cancel, done: new Promise(r => (release = r)) };
+  $("#busy").hidden = false;
+  $("#send").textContent = "■"; $("#send").classList.add("stop"); $("#send").setAttribute("aria-label", "Stop");
+  renderSuggest();
+  const says = $$(".lane .say");
   try {
     await ex.steer({
-      pushes: [{ layer, n, dose: c.dose[c.mode], mode: c.mode }],
+      pushes: [{ layer, n, dose: state.dose[state.mode], mode: state.mode }],
       rowsMessages: rows.map(rs => rs.slice(0, -1).map(m => ({ role: m.role, content: m.content }))),
-      maxNew: 200,
+      maxNew: 120,
       cancel,
       onDelta: (r, d) => {
-        rows[r][rows[r].length - 1].content += d;
-        if (!live()) return;
-        if (els[r]) els[r].textContent = rows[r][rows[r].length - 1].content;
-        ntok++;
-        if (ntok % 6 === 0) status(`steering · ${(ntok / 3 / ((performance.now() - t0) / 1000)).toFixed(1)} tok/s per column`);
-        const box = els[r]?.closest(".turns");
-        if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 80) box.scrollTop = box.scrollHeight;
+        const msg = rows[r][rows[r].length - 1];
+        msg.content += d;
+        if (!live() || state.keep) { if (live()) renderLanes(); return; }
+        const el = says[r];
+        el.classList.remove("wait");
+        el.textContent = msg.content;
+        if (el.closest(".lane").scrollHeight > el.closest(".lane").clientHeight) el.closest(".lane").scrollTop = 1e9;
       },
     });
   } catch (err) {
-    console.error(err);
-    for (let r = 0; r < 3; r++) rows[r][rows[r].length - 1].content += `\n[${err.message || err}]`;
+    for (let r = 0; r < 3; r++) rows[r][rows[r].length - 1].content += ` [${err.message || err}]`;
+    fail("Could not finish", err);
   } finally {
     for (let r = 0; r < 3; r++) delete rows[r][rows[r].length - 1].live;
-    if (live()) renderThread();
     job = null;
-    $("#c-go").textContent = state.chat.dir === "reads" ? "read" : "run";
-    status("");
+    release();
+    $("#busy").hidden = true;
+    $("#send").textContent = "↑"; $("#send").classList.remove("stop"); $("#send").setAttribute("aria-label", "Ask");
+    if (live()) renderLanes();
+    renderSuggest();
   }
+}
+
+// ---------- explore: this neuron ----------
+
+const words = list => list.map(t => `<span>${esc(show(t))}</span>`).join("");
+
+async function renderAbout() {
+  const f = state.focus;
+  $("#about-none").hidden = !!f;
+  $("#about").hidden = !f;
+  if (!f) return;
+  const { layer, n } = f;
+  $("#a-title").textContent = label(layer, n);
+  $("#a-sub").textContent = `Neuron ${n} in layer ${layer} of ${model.L} · one of ${model.I.toLocaleString()} in this layer`;
+  $("#a-name").value = state.names[key(layer, n)] || "";
+  $("#a-up").innerHTML = $("#a-down").innerHTML = "";
+  $("#a-links").innerHTML = "";
+  $("#a-next").innerHTML = `<p class="fine">Pushes this neuron up and down on three short prompts and lists the next words that gain the most.</p><button id="next-go" class="secondary small" type="button">Measure</button>`;
+  $("#read-out").innerHTML = "";
+  for (const d of ["d-fires", "d-links", "d-next"]) if ($("#" + d).open) loadDetail(d);
+  renderTech();
+  try {
+    const lens = await ex.lens(layer, n, 8);
+    if (!same(f)) return;
+    $("#a-up").innerHTML = words(lens.up);
+    $("#a-down").innerHTML = words(lens.down);
+  } catch (err) { fail("Could not read the neuron", err); }
+}
+const same = f => state.focus === f;
+
+$("#a-name").addEventListener("input", e => {
+  const f = state.focus; if (!f) return;
+  const k = key(f.layer, f.n), v = e.target.value.trim();
+  if (v) { state.names[k] = e.target.value; if (!state.saved.includes(k)) { state.saved = [k, ...state.saved]; store.set("saved", state.saved); } }
+  else delete state.names[k];
+  store.set("names", state.names);
+  renderHeader();
+  $("#a-title").textContent = label(f.layer, f.n);
 });
 
-async function runReads(text) {
-  const { layer, n } = state.focus, f0 = state.focus;
-  $("#c-reads").innerHTML = `<span class="dim">reading…</span>`;
-  let res;
-  try { res = await ex.read(layer, n, text, { chat: true }); }
-  catch (err) { console.error(err); $("#c-reads").innerHTML = `<span class="err">${esc(err.message || err)}</span>`; return; }
-  if (state.focus !== f0) return;
-  const max = Math.max(1e-6, ...res.acts.map(Math.abs));
-  $("#c-reads").innerHTML = res.units.map(u => {
-    const a = u.idx.reduce((s, i) => (Math.abs(res.acts[i]) > Math.abs(s) ? res.acts[i] : s), 0);
-    return `<span title="${a.toFixed(3)}" data-a="${a.toFixed(3)}" style="background:${shade(a / max)}">${esc(show(u.text))}</span>`;
-  }).join("") + `<div class="note" style="width:100%;padding:8px 0 0">max |act| ${max.toFixed(3)} · tap a token for its value</div>`;
-  $$("#c-reads span[data-a]").forEach(s => (s.onclick = () => status(`act ${s.dataset.a}`)));
+for (const d of ["d-fires", "d-links", "d-next"]) $("#" + d).addEventListener("toggle", e => { if (e.target.open) loadDetail(d); });
+
+async function loadDetail(d) {
+  const f = state.focus; if (!f) return;
+  const { layer, n } = f;
+  try {
+    if (d === "d-fires") await renderFires(f);
+    if (d === "d-links") {
+      $("#a-links").innerHTML = `<li class="none">Tracing the weights…</li>`;
+      const con = await ex.connections(layer, n, 8);
+      if (!same(f)) return;
+      const row = (c, dir) => `<li data-l="${c.layer}" data-n="${c.n}"><span class="t"><b>${esc(label(c.layer, c.n))}</b><span class="dim">layer ${c.layer} · ${dir}</span><span class="r ${c.sign > 0 ? "up" : "down"}">${c.sign > 0 ? "▲ excites" : "▼ inhibits"}</span></span><span class="w"></span></li>`;
+      $("#a-links").innerHTML = `<li class="none">Earlier neurons that feed it</li>` + con.up.slice(0, 6).map(c => row(c, "feeds this")).join("") +
+        `<li class="none">Later neurons it feeds</li>` + con.down.slice(0, 6).map(c => row(c, "fed by this")).join("");
+      for (const li of $$("#a-links li[data-l]")) {
+        const ls = await ex.lens(+li.dataset.l, +li.dataset.n, 4);
+        if (!same(f)) return;
+        li.querySelector(".w").textContent = "favors " + ls.up.map(show).join("  ");
+      }
+    }
+  } catch (err) { fail("Could not load this section", err); }
 }
+$("#a-links").addEventListener("click", e => { const li = e.target.closest("li[data-l]"); if (li) openNeuron(+li.dataset.l, +li.dataset.n, { go: "about" }); });
+
+$("#a-next").addEventListener("click", async e => {
+  if (!e.target.closest("#next-go")) return;
+  const f = state.focus; if (!f) return;
+  $("#a-next").innerHTML = `<p class="fine">Measuring…</p>`;
+  try {
+    const s = await ex.steerLens(f.layer, f.n, { dose: 0.8, k: 8 });
+    if (!same(f)) return;
+    const size = kl => (kl < 0.05 ? "barely" : kl < 0.3 ? "a little" : kl < 1 ? "clearly" : "strongly");
+    $("#a-next").innerHTML = `<div class="fact"><h4>Boosted, these next words gain the most</h4><div class="words">${words(s.up)}</div></div>
+      <div class="fact"><h4>Suppressed, these gain the most</h4><div class="words">${words(s.down)}</div></div>
+      <p class="fine" style="margin-top:10px">Boosting changes the next word ${size(s.klUp)} (KL ${s.klUp.toFixed(2)}); suppressing, ${size(s.klDown)} (KL ${s.klDown.toFixed(2)}).</p>`;
+  } catch (err) { $("#a-next").innerHTML = ""; fail("Could not measure", err); }
+});
+
+$("#read-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  const f = state.focus, text = $("#read-text").value.trim();
+  if (!f || !text) return;
+  $("#read-text").blur();
+  $("#read-out").innerHTML = `<span class="cap">Reading…</span>`;
+  try {
+    const res = await ex.read(f.layer, f.n, text, { chat: false });
+    if (!same(f)) return;
+    const max = Math.max(1e-6, ...res.acts.map(Math.abs));
+    $("#read-out").innerHTML = res.units.map(u => {
+      const a = u.idx.reduce((s, i) => (Math.abs(res.acts[i]) > Math.abs(s) ? res.acts[i] : s), 0);
+      return `<span title="${a.toFixed(3)}" style="background:${shade(a / max)}">${esc(show(u.text))}</span>`;
+    }).join("") + `<span class="cap">Orange: the neuron fires; pink: it goes negative. Strongest: ${max.toFixed(2)}.</span>`;
+  } catch (err) { $("#read-out").innerHTML = ""; fail("Could not read the text", err); }
+});
 
 function shade(v) {
   const a = Math.min(1, Math.abs(v));
   return v >= 0 ? `rgba(255,181,71,${a * 0.85})` : `rgba(255,79,154,${a * 0.85})`;
 }
 
-// narrow layout: page dots follow the column pager
-$("#c-thread").addEventListener("scroll", e => {
-  const el = e.target, i = Math.round(el.scrollLeft / Math.max(1, el.scrollWidth - el.clientWidth) * 2);
-  $$("#c-dots i").forEach((d, k) => d.classList.toggle("on", k === i));
-}, { passive: true });
-
-// ---------- lens tab ----------
-
-async function renderLens() {
-  if (!state.focus) return;
-  const { layer, n } = state.focus, el = $("#nt-lens");
-  const f0 = state.focus;
-  el.innerHTML = `<div class="sect"><h3>logit lens · what the down column writes</h3><div id="ll" class="dim">…</div></div>
-    <div class="sect"><h3>steer lens · next-token change when pushed ±0.8</h3><div id="sl"><button class="btn" id="sl-go">compute (3 prompts, pushed up and down)</button></div></div>
-    <div class="sect"><h3>connections · direct path through the weights</h3><div id="cn" class="dim">…</div></div>`;
-  const lens = await ex.lens(layer, n, 16);
-  if (state.focus !== f0) return;
-  $("#ll").innerHTML = `<div class="lensgrid"><span class="up">+</span><div class="chips">${chips(lens.up)}</div><span class="down">−</span><div class="chips">${chips(lens.down)}</div></div>`;
-  $("#sl-go").onclick = async () => {
-    $("#sl").innerHTML = `<span class="dim">pushing the neuron on three prompts…</span>`;
-    let s;
-    try { s = await ex.steerLens(layer, n, { dose: 0.8, k: 14 }); }
-    catch (err) { console.error(err); if (state.focus === f0) $("#sl").innerHTML = `<span class="err">${esc(err.message || err)}</span>`; return; }
-    if (state.focus !== f0) return;
-    $("#sl").innerHTML = `<div class="lensgrid"><span class="up">+</span><div class="chips">${chips(s.up)}</div><span class="down">−</span><div class="chips">${chips(s.down)}</div></div>
-      <div class="note" style="padding:6px 0 0">mean KL from baseline: up ${s.klUp.toFixed(3)} · down ${s.klDown.toFixed(3)}</div>`;
-  };
-  const con = await ex.connections(layer, n, 16);
-  if (state.focus !== f0) return;
-  const rows = (list, label) => `<div class="note" style="padding:6px 0 2px">${label}</div><ol class="rows">${list.map(c =>
-    `<li data-l="${c.layer}" data-n="${c.n}"><span class="n ${c.sign > 0 ? "up" : "down"}">L${c.layer} N${c.n}</span><span class="z">${c.z.toFixed(1)}</span><span class="w">${esc(state.names[key(c.layer, c.n)] || "")}</span></li>`).join("")}</ol>`;
-  $("#cn").innerHTML = rows(con.up, "fed by (earlier layers) · yellow pushes this neuron up, pink down") + rows(con.down, "feeds (later layers) · yellow: this neuron pushes it up");
-  $$("#cn li").forEach(li => (li.onclick = () => openNeuron(+li.dataset.l, +li.dataset.n)));
-  // fill lens words for the listed neurons lazily
-  for (const li of $$("#cn li")) {
-    const l = +li.dataset.l, nn = +li.dataset.n;
-    const w = li.querySelector(".w");
-    if (w.textContent) continue;
-    const ls = await ex.lens(l, nn, 4);
-    if (state.focus !== f0) return;
-    w.innerHTML = `<b>${esc(ls.up.map(show).join(" "))}</b> · ${esc(ls.down.map(show).join(" "))}`;
-  }
-}
-
-// ---------- examples tab (calibration contexts) ----------
-
-function renderExamples() {
-  const el = $("#nt-examples");
-  if (!state.focus) return;
-  const { layer, n } = state.focus;
+async function renderFires(f) {
+  const el = $("#a-fires");
   if (!ex.examples) {
-    el.innerHTML = `<div class="sect"><p class="dim">Where does this neuron fire? Run the built-in corpus (${CORPUS.length} short passages: prose, code, chat, Chinese, French, law, medicine…) through the model once; every neuron's strongest contexts are kept on this device.</p><button class="btn" id="cal-go">run calibration</button> <span id="cal-msg" class="dim mono"></span></div>`;
-    $("#cal-go").onclick = e => { e.target.disabled = true; calibrate($("#cal-msg")).then(renderExamples); };
-    return;
+    el.innerHTML = `<p class="fine">Scanning sample texts (one time)… ${Math.round(calFrac * 100)}%</p>`;
+    calibration ||= runCalibration();
+    await calibration;
+    if (!same(f) || !ex.examples) return;
   }
-  const ctx = ex.contexts(layer, n, 28) || [];
+  const { layer, n } = f;
+  const ctx = (ex.contexts(layer, n, 24) || []).filter(c => c.sign === "+").slice(0, 4);
+  if (!ctx.length) { el.innerHTML = `<p class="fine">It barely fires on the sample texts.</p>`; return; }
   const chunks = ex.examples.chunks;
-  const pos = ex.scale.pos[layer * model.I + n], neg = ex.scale.neg[layer * model.I + n];
-  el.innerHTML = `<div class="note">range on the corpus: ${neg.toFixed(2)} … ${pos.toFixed(2)}. Each context ends a few tokens after the peak; shading is this neuron's activation on every token (rerun live).</div>` +
-    ctx.map((c, i) => `<div class="ctx" data-i="${i}"><span class="act ${c.sign === "+" ? "up" : "down"}">${c.sign} ${c.act.toFixed(3)}</span>${esc(tok.decode(chunks[c.chunk].slice(c.s, c.e)))}</div>`).join("");
-  // shade each context with the neuron's live activation over the whole chunk
-  (async () => {
-    for (const div of $$("#nt-examples .ctx")) {
-      const c = ctx[+div.dataset.i];
-      const ids = chunks[c.chunk];
-      const r = await ex.readIds(layer, n, ids);
-      if (!state.focus || state.focus.layer !== layer || state.focus.n !== n) return;
-      const scale = Math.max(Math.abs(c.act), 1e-6);
-      const units = tok.units(ids.slice(c.s, c.e));
-      div.innerHTML = `<span class="act ${c.sign === "+" ? "up" : "down"}">${c.sign} ${c.act.toFixed(3)}</span>` + units.map(u => {
-        const a = u.idx.reduce((s, j) => { const v = r[c.s + j]; return Math.abs(v) > Math.abs(s) ? v : s; }, 0);
-        return `<span style="background:${shade(a / scale)}">${esc(u.text)}</span>`;
-      }).join("");
-    }
-  })();
+  el.innerHTML = `<p class="fine">Its strongest moments in ${CORPUS.length} short sample texts (prose, code, chat, other languages).</p>` +
+    ctx.map((c, i) => `<div class="ctx" data-i="${i}">${esc(tok.decode(chunks[c.chunk].slice(c.s, c.e)))}</div>`).join("");
+  for (const div of $$("#a-fires .ctx")) {  // shade each with the neuron's activation, token by token
+    const c = ctx[+div.dataset.i];
+    const r = await ex.readIds(layer, n, chunks[c.chunk]);
+    if (!same(f)) return;
+    const scale = Math.max(Math.abs(c.act), 1e-6);
+    div.innerHTML = tok.units(chunks[c.chunk].slice(c.s, c.e)).map(u => {
+      const a = u.idx.reduce((s, j) => { const v = r[c.s + j]; return Math.abs(v) > Math.abs(s) ? v : s; }, 0);
+      return `<span style="background:${shade(a / scale)}">${esc(u.text)}</span>`;
+    }).join("");
+  }
 }
 
-let calibrating = null;
-function calibrate(msgEl) {
-  calibrating ||= runCalibration(msgEl).catch(err => { console.error(err); status("calibration failed: " + (err.message || err)); }).finally(() => (calibrating = null));
-  return calibrating;
+$$("#mode button").forEach(b => (b.onclick = () => { state.mode = b.dataset.m; renderStrength(); }));
+$("#keep").addEventListener("change", e => { state.keep = e.target.checked; });
+function renderTech() {
+  const f = state.focus;
+  if (!f || !model) return;
+  const unit = ex.residP50 ? ex.residP50[f.layer] / (ex.colNorm.get(f.layer * 1e6 + f.n) || NaN) : NaN;
+  $("#a-tech").textContent = `${model.types[f.layer] === "full_attention" ? "gated attention" : "Gated DeltaNet"} layer · ` +
+    (isFinite(unit) ? `strength 1 adds ${unit.toFixed(2)} to the activation · ` : "") + `GPU memory ${(model.gpu.bytes / 1e6).toFixed(0)} MB`;
 }
-async function runCalibration(msgEl) {
-  const t0 = performance.now();
-  await ex.calibrate(CORPUS, {
-    onProgress: p => { if (msgEl) msgEl.textContent = `${p.chunk}/${p.chunks} · ${((performance.now() - t0) / 1000).toFixed(0)}s`; status(`calibrating ${p.chunk}/${p.chunks}`); },
-  });
-  status("");
-  await saveCalibration();
-  renderRunCal();
+
+// ---------- explore: find ----------
+
+function setFindNote() {
+  const busy = calibration && !ex?.scale;
+  $("#find-note").textContent = busy ? `Preparing neuron ranges in the background (one time)… ${Math.round(calFrac * 100)}%` : "";
+}
+
+$("#find-form").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!ex) return;
+  const text = $("#find-text").value.trim();
+  if (!text) { $("#find-text").focus(); return; }
+  $("#find-text").blur();
+  $("#find-go").disabled = true;
+  $("#find-rows").innerHTML = `<li class="none">Reading your text…</li>`;
+  try {
+    if (calibration && !ex.scale) { $("#find-rows").innerHTML = `<li class="none">Finishing a one-time preparation first…</li>`; await calibration; }
+    state.find = await ex.activations(text, { maxTokens: 128 });
+    state.find.at = Date.now();
+    state.findPos = -1;
+    findKey = "";
+    $("#find-filters").hidden = false;
+    renderFindToks();
+    renderFind();
+  } catch (err) { $("#find-rows").innerHTML = ""; fail("Could not search", err); }
+  finally { $("#find-go").disabled = false; }
+});
+
+function renderFindToks() {
+  const r = state.find;
+  $("#find-toks").innerHTML = `<span class="cap">Tap a word to see the neurons for just that word.</span>` +
+    r.units.map((u, i) => `<span data-i="${i}" class="${state.findPos === u.idx[u.idx.length - 1] ? "sel" : ""}">${esc(show(u.text))}</span>`).join("") +
+    (r.ids.length >= 128 ? `<span class="cap">Only the first 128 tokens were read.</span>` : "");
+}
+$("#find-toks").addEventListener("click", e => {
+  const s = e.target.closest("span[data-i]"); if (!s) return;
+  const u = state.find.units[+s.dataset.i], p = u.idx[u.idx.length - 1];
+  state.findPos = state.findPos === p ? -1 : p;
+  renderFindToks(); renderFind();
+});
+$$("#find-sign button").forEach(b => (b.onclick = () => { state.findSign = b.dataset.s; $$("#find-sign button").forEach(x => x.classList.toggle("on", x === b)); renderFind(); }));
+["#find-lo", "#find-hi"].forEach(s => $(s).addEventListener("change", renderFind));
+// taps are handled on the list, so a re-render between touch-down and click cannot swallow them
+$("#find-rows").addEventListener("click", e => {
+  const li = e.target.closest("li[data-l]");
+  if (li) { openNeuron(+li.dataset.l, +li.dataset.n, { go: "steer" }); if (narrow()) toast("Now ask it something."); }
+});
+
+let findKey = "";
+async function renderFind() {
+  const r = state.find;
+  if (!r) return;
+  const lo = Math.max(0, +$("#find-lo").value || 0), hi = Math.min(model.L - 1, +($("#find-hi").value || model.L - 1));
+  // a layer field's "change" also fires when it loses focus to a tap on a result: nothing to redo then
+  const k = [r.at, state.findPos, state.findSign, lo, hi, !!ex.scale].join(",");
+  if (k === findKey) return;
+  findKey = k;
+  const top = ex.topAt(r, state.findPos, { sign: state.findSign, lo, hi, limit: 30 });
+  const tokAt = i => show(tok.units(r.ids.slice(i, i + 1))[0]?.text ?? tok.piece(r.ids[i]));
+  $("#find-rows").innerHTML = top.length ? top.map(t => `<li data-l="${t.layer}" data-n="${t.n}">
+      <span class="t"><b>${esc(label(t.layer, t.n))}</b><span class="dim">layer ${t.layer}</span><span class="r ${t.score > 0 ? "up" : "down"}">${t.score > 0 ? "▲" : "▼"} on “${esc(tokAt(t.pos).trim() || tokAt(t.pos))}”</span></span>
+      <span class="w"></span></li>`).join("") : `<li class="none">No neuron passes these filters.</li>`;
+  overlayFind(top);
+  const g = findKey;
+  for (const li of $$("#find-rows li[data-l]").slice(0, 12)) {  // what each one favors, filled in as it comes
+    try {
+      const ls = await ex.lens(+li.dataset.l, +li.dataset.n, 5);
+      if (g !== findKey) return;
+      li.querySelector(".w").textContent = "favors " + ls.up.map(show).join("  ");
+    } catch { return; }
+  }
+}
+
+function overlayFind() {
+  if (!map) return;
+  const r = state.find, ov = new Float32Array(model.L * model.I), T = r.T, I = model.I;
+  for (let l = 0; l < model.L; l++) for (let n = 0; n < I; n++) {
+    let best = 0;
+    const t0 = state.findPos >= 0 ? state.findPos : 1, t1 = state.findPos >= 0 ? state.findPos + 1 : T;
+    for (let t = t0; t < t1; t++) { const s = ex.scoreOf(l, n, r.acts[(l * T + t) * I + n]); if (Math.abs(s) > Math.abs(best)) best = s; }
+    ov[l * I + n] = ex.scale ? best : best / 4;
+  }
+  map.setOverlay(ov);
+  $("#map-legend").textContent = "Colours: how strongly each neuron reacts to your Find text (orange up, pink down). Tap a band, then slide across it.";
+}
+
+// ---------- explore: browse ----------
+
+function renderSaved() {
+  const saved = state.saved.map(parseKey).filter(Boolean);
+  const recent = state.recent.filter(r => !state.saved.includes(key(r.layer, r.n))).slice(0, 8);
+  const row = (f, star) => `<li data-l="${f.layer}" data-n="${f.n}"><span class="t"><b>${esc(label(f.layer, f.n))}</b><span class="dim">layer ${f.layer}${state.names[key(f.layer, f.n)] ? ` · neuron ${f.n}` : ""}</span><span class="r">${star ? "★" : ""}</span></span></li>`;
+  $("#saved-rows").innerHTML = (saved.length ? saved.map(f => row(f, true)).join("") : `<li class="none">Tap ☆ next to a neuron's name to keep it here.</li>`) +
+    (recent.length ? `<li class="none">Recently opened</li>` + recent.map(f => row(f, false)).join("") : "");
+}
+$("#saved-rows").addEventListener("click", e => { const li = e.target.closest("li[data-l]"); if (li) openNeuron(+li.dataset.l, +li.dataset.n, { go: "steer" }); });
+
+$("#goto").addEventListener("submit", e => {
+  e.preventDefault();
+  const l = parseInt($("#go-l").value, 10), n = parseInt($("#go-n").value, 10);
+  if (l >= 0 && l < model.L && n >= 0 && n < model.I) { document.activeElement?.blur(); openNeuron(l, n, { go: "steer" }); }
+  else toast(`Layer is 0–${model.L - 1}, neuron 0–${model.I - 1}.`);
+});
+
+// until Find runs, the map shows each neuron's write strength (|down column|) relative to its layer
+async function showWeightMap() {
+  try {
+    const v = await ex.writeNorms();
+    if (state.find) return;
+    const ov = new Float32Array(v.length), I = model.I;
+    for (let l = 0; l < model.L; l++) {
+      const row = Array.from(v.subarray(l * I, (l + 1) * I)).sort((a, b) => a - b);
+      const lo = row[Math.floor(I * 0.5)], hi = row[Math.floor(I * 0.999)];
+      for (let n = 0; n < I; n++) ov[l * I + n] = Math.max(0, (v[l * I + n] - lo) / Math.max(1e-6, hi - lo));
+    }
+    map.setOverlay(ov, { neutral: true });
+  } catch (err) { console.error(err); }
+}
+
+let prevGen = 0;
+async function previewNeuron(p) {
+  const tip = $("#map-tip");
+  const g = ++prevGen;
+  if (!p) { tip.hidden = true; return; }
+  tip.hidden = false;
+  tip.style.left = `${Math.min(p.x + 14, $("#map").clientWidth - 200)}px`;
+  tip.style.top = `${Math.max(4, p.y - 64)}px`;
+  tip.innerHTML = `<b>${esc(label(p.layer, p.n))}</b> · layer ${p.layer}`;
+  await new Promise(r => setTimeout(r, 120));  // sliding: only look up where the finger rests
+  if (g !== prevGen) return;
+  try {
+    const lens = await ex.lens(p.layer, p.n, 5);
+    if (g !== prevGen) return;
+    tip.innerHTML += `<div class="up">favors ${esc(lens.up.map(show).join(" "))}</div>`;
+  } catch {}
+}
+
+// ---------- calibration (background, one time) ----------
+
+async function runCalibration() {
+  try {
+    await ex.calibrate(CORPUS, {
+      hold: () => !!job,  // steering goes first
+      onProgress: p => {
+        calFrac = p.frac;
+        setFindNote();
+        const fi = $("#a-fires .fine"); if (fi && !ex.examples) fi.textContent = `Scanning sample texts (one time)… ${Math.round(p.frac * 100)}%`;
+      },
+    });
+    await saveCalibration();
+  } catch (err) { console.error(err); } finally { setFindNote(); }
 }
 
 const calName = () => `duo-mech-interp:${REPO}:cal1`;
 async function saveCalibration() {
+  if (!ex.scale) return;
   try {
     const c = await caches.open(calName());
     const { pos, neg } = ex.scale, { chunks, topP, topN } = ex.examples;
@@ -539,84 +706,4 @@ async function loadCalibration() {
   } catch (e) { console.warn("no stored calibration", e); }
 }
 
-// ---------- fires (run tab) ----------
-
-function renderRunCal() {
-  $("#run-cal").innerHTML = ex?.scale ? "scores: activation as a multiple of the neuron's range on the built-in corpus"
-    : `scores are raw activations until you calibrate · <button class="btn" id="run-cal-go">calibrate</button> <span class="mono" id="run-cal-msg"></span>`;
-  const b = $("#run-cal-go");
-  if (b) b.onclick = () => { b.disabled = true; calibrate($("#run-cal-msg")); };
-}
-
-let runSign = "both";
-$$("#run-sign button").forEach(b => (b.onclick = () => { runSign = b.dataset.s; $$("#run-sign button").forEach(x => x.classList.toggle("on", x === b)); renderRun(); }));
-["#run-lo", "#run-hi"].forEach(s => $(s).addEventListener("change", renderRun));
-$("#run-form").addEventListener("submit", async e => {
-  e.preventDefault();
-  if (!ex) return;
-  const text = $("#run-text").value.trim();
-  if (!text) return;
-  $("#run-go").disabled = true;
-  status("running text…");
-  try {
-    state.run = await ex.activations(text, { maxTokens: 128 });
-    state.run.at = Date.now();  // a new run always re-renders, even for the same text
-    state.runPos = -1;
-    renderRunToks();
-    renderRun();
-  } finally { $("#run-go").disabled = false; status(""); }
-});
-
-function renderRunToks() {
-  const r = state.run;
-  $("#run-toks").innerHTML = r.units.map((u, i) => `<span data-i="${i}" class="${state.runPos === u.idx[u.idx.length - 1] ? "sel" : ""}">${esc(show(u.text))}</span>`).join("") +
-    (r.ids.length >= 128 ? `<span class="dim"> (first 128 tokens)</span>` : "");
-  $$("#run-toks span[data-i]").forEach(s => (s.onclick = () => {
-    const u = r.units[+s.dataset.i], p = u.idx[u.idx.length - 1];
-    state.runPos = state.runPos === p ? -1 : p;
-    renderRunToks(); renderRun();
-  }));
-}
-
-// Row taps are handled on the list, so a re-render between touch-down and click cannot swallow them.
-$("#run-rows").addEventListener("click", e => {
-  const li = e.target.closest("li[data-l]");
-  if (li) openNeuron(+li.dataset.l, +li.dataset.n);
-});
-
-let runKey = "";
-function renderRun() {
-  const r = state.run;
-  if (!r) return;
-  const lo = +$("#run-lo").value || 0, hi = +$("#run-hi").value || 23;
-  // a layer field's "change" also fires when it loses focus (e.g. to the tap on a row): nothing to redo then
-  const k = [r.ids.length, r.acts.length, state.runPos, runSign, lo, hi, !!ex.scale, r.at].join(",");
-  if (k === runKey) return;
-  runKey = k;
-  const top = ex.topAt(r, state.runPos, { sign: runSign, lo, hi, limit: 150 });
-  const tokAt = i => show(tok.piece(r.ids[i]));
-  $("#run-rows").innerHTML = top.map(t => `<li data-l="${t.layer}" data-n="${t.n}"><span class="n ${t.score > 0 ? "up" : "down"}">L${t.layer} N${t.n}</span><span class="z">${Math.abs(t.score).toFixed(1)}</span><span class="w">${esc(state.names[key(t.layer, t.n)] || "")} <b>${esc(tokAt(t.pos))}</b> · ${t.act.toFixed(2)}</span></li>`).join("");
-  // map overlay: each neuron's score at the chosen token (or its strongest over the text), scaled so 1 = strong
-  const ov = new Float32Array(model.L * model.I);
-  const T = r.T, I = model.I;
-  for (let l = 0; l < model.L; l++) for (let n = 0; n < I; n++) {
-    let best = 0;
-    const t0 = state.runPos >= 0 ? state.runPos : 1, t1 = state.runPos >= 0 ? state.runPos + 1 : T;
-    for (let t = t0; t < t1; t++) { const s = ex.scoreOf(l, n, r.acts[(l * T + t) * I + n]); if (Math.abs(s) > Math.abs(best)) best = s; }
-    ov[l * I + n] = ex.scale ? best : best / 4;
-  }
-  map.setOverlay(ov);
-  $("#map-legend").textContent = `colour: each neuron's ${ex.scale ? "score" : "activation"} ${state.runPos >= 0 ? "at the selected token" : "at its strongest token"} (orange +, pink −) · tap a band to open its strongest neuron`;
-}
-
-// ---------- list tab ----------
-
-function renderList() {
-  const named = Object.entries(state.names).filter(([, v]) => v).map(([k, v]) => { const m = /L(\d+)\/N(\d+)/.exec(k); return { layer: +m[1], n: +m[2], name: v }; });
-  const rows = [...named.map(x => ({ ...x, kind: "named" })), ...state.recent.filter(r => !state.names[key(r.layer, r.n)]).map(x => ({ ...x, kind: "recent" }))];
-  $("#list-rows").innerHTML = rows.map(r => `<li data-l="${r.layer}" data-n="${r.n}"><span class="n">L${r.layer} N${r.n}</span><span class="z">${r.kind === "named" ? "★" : ""}</span><span class="w"><b>${esc(r.name || "")}</b></span></li>`).join("") ||
-    `<li><span></span><span></span><span class="w">nothing yet</span></li>`;
-  $$("#list-rows li[data-l]").forEach(li => (li.onclick = () => openNeuron(+li.dataset.l, +li.dataset.n)));
-}
-
-boot().catch(e => { console.error(e); $("#boot-err").hidden = false; $("#boot-err").textContent = String(e.stack || e); });
+boot().catch(e => { console.error(e); $("#w-err").hidden = false; $("#w-err").textContent = String(e.stack || e); });

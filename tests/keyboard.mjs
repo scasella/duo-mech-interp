@@ -8,7 +8,8 @@ const pw = require(process.env.PLAYWRIGHT || "playwright");
 const chromium = pw[process.env.BROWSER || "chromium"];  // BROWSER=webkit runs the same checks in Safari's engine
 const base = process.argv[2];
 const sizes = [["outer", 382, 618, 300], ["split", 385, 609, 290], ["inner-landscape", 951, 620, 250], ["inner-portrait", 669, 902, 480]];
-const fields = [["#c-input", null], ["#jump", null], ["#run-text", "run"], ["#f-name", null]];
+// [field, Explore tab to show it in (null: Steer), <details> to open]
+const fields = [["#prompt", null, null], ["#find-text", "find", null], ["#a-name", "about", null], ["#read-text", "about", "#d-read"], ["#go-l", "browse", null]];
 const browser = await chromium.launch();
 let bad = 0;
 for (const [name, w, h, kh] of sizes) {
@@ -16,14 +17,16 @@ for (const [name, w, h, kh] of sizes) {
   p.on("pageerror", e => { console.log("[pageerror]", e.message); bad++; });
   await p.goto(`${base}/index.html`);
   await p.waitForTimeout(500);
-  await p.evaluate(() => { document.getElementById("boot").hidden = true; });
-  for (const [sel, tab] of fields) {
+  // no model here: lift the welcome screen and show what a chosen neuron would show
+  await p.evaluate(() => { document.getElementById("welcome").hidden = true; document.getElementById("composer").hidden = false; document.getElementById("about").hidden = false; });
+  for (const [sel, tab, det] of fields) {
     await p.setViewportSize({ width: w, height: h });
-    await p.evaluate(([sel, tab]) => {  // show the field the way tapping through the UI would
-      if (tab) document.querySelector(`#btabs button[data-bt="${tab}"]`).click();
+    await p.evaluate(([sel, tab, det]) => {  // show the field the way tapping through the UI would
+      if (tab) document.querySelector(`#xtabs button[data-x="${tab}"]`).click();
+      if (det) document.querySelector(det).open = true;
       const pane = document.querySelector(sel).closest(".pane");
-      document.querySelector(`#panes button[data-p="${pane.id}"]`).click();
-    }, [sel, tab]);
+      document.querySelector(`#tabbar button[data-p="${pane.id}"]`)?.click();
+    }, [sel, tab, det]);
     await p.waitForTimeout(100);
     await p.focus(sel);
     for (const hh of [h - 40, kh, kh - 10]) {  // the keyboard animating in

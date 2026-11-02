@@ -6,98 +6,147 @@
 <meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
-<title>Duo Neuron Explorer</title>
+<meta name="apple-mobile-web-app-title" content="Neurons">
+<title>Neuron Explorer</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%223%22 fill=%22%23151515%22/%3E%3Crect x=%227.4%22 y=%222%22 width=%221.2%22 height=%2212%22 fill=%22%23333%22/%3E%3Ccircle cx=%224.5%22 cy=%228%22 r=%222%22 fill=%22%23ffb547%22/%3E%3Ccircle cx=%2211.5%22 cy=%228%22 r=%222%22 fill=%22%23ff4f9a%22/%3E%3C/svg%3E">
 <link rel="stylesheet" href="app/style.css">
 </head>
 <body>
 <div id="app">
-  <!-- left / bottom pane: the model -->
-  <section id="browse" class="pane">
-    <header class="bar">
-      <span class="brand">neuron explorer</span>
-      <input id="jump" placeholder="L12 N1234" aria-label="go to neuron" spellcheck="false" autocomplete="off" autocapitalize="characters" enterkeyhint="go">
-      <span id="status" class="mono dim"></span>
-    </header>
-    <nav class="tabs" id="btabs">
-      <button data-bt="map" class="on">map</button><button data-bt="run">fires</button><button data-bt="list">list</button>
-    </nav>
-    <div class="bpane on" id="bt-map">
-      <canvas id="map"></canvas>
-      <div id="map-tip" class="tip mono" hidden></div>
-      <div id="map-legend" class="dim">tap a layer to see its sheet, then drag across neurons to preview</div>
-    </div>
-    <div class="bpane" id="bt-run">
-      <form id="run-form" class="stack">
-        <textarea id="run-text" rows="4" spellcheck="false" placeholder="Paste text: see which neurons fire most on each token"></textarea>
-        <div class="row">
-          <span class="seg" id="run-sign"><button type="button" data-s="both" class="on">±</button><button type="button" data-s="+">+</button><button type="button" data-s="-">−</button></span>
-          <span class="lab">L</span><input id="run-lo" value="0" inputmode="numeric" class="num" aria-label="from layer"><span class="lab">–</span><input id="run-hi" value="23" inputmode="numeric" class="num" aria-label="to layer">
-          <button id="run-go" type="submit" class="go">run</button>
-        </div>
-      </form>
-      <div id="run-cal" class="note"></div>
-      <div id="run-toks" class="toks"></div>
-      <ol id="run-rows" class="rows"></ol>
-    </div>
-    <div class="bpane" id="bt-list">
-      <div class="note dim">Named and recently opened neurons. Names stay in this browser.</div>
-      <ol id="list-rows" class="rows"></ol>
-    </div>
-  </section>
 
-  <!-- right / top pane: one neuron -->
-  <section id="neuron" class="pane">
-    <header class="bar">
-      <span id="f-id" class="mono">no neuron open</span>
-      <span id="f-meta" class="mono dim"></span>
-      <button id="f-prev" class="icon" aria-label="previous neuron" title="previous neuron">‹</button>
-      <button id="f-next" class="icon" aria-label="next neuron" title="next neuron">›</button>
+  <!-- Steer: the experiment. Right page when open, top half in portrait, its own tab on a narrow screen. -->
+  <section id="steer" class="pane">
+    <header class="top">
+      <button id="who" class="who" type="button" aria-label="About this neuron">
+        <span id="who-name">Choose a neuron</span>
+        <span id="who-sub"></span>
+      </button>
+      <button id="save" class="icon" type="button" aria-label="Save this neuron" hidden>☆</button>
     </header>
-    <textarea id="f-name" rows="1" placeholder="name this neuron" spellcheck="false" aria-label="neuron name"></textarea>
-    <nav class="tabs" id="ntabs">
-      <button data-nt="chat" class="on">chat</button><button data-nt="lens">lens</button><button data-nt="examples">examples</button>
-    </nav>
-    <div class="npane on" id="nt-chat">
-      <div id="c-lens" class="lensline"></div>
-      <div id="c-thread">
-        <div class="col" data-row="0"><div class="colhead up"></div><div class="turns"></div></div>
-        <div class="col" data-row="1"><div class="colhead"></div><div class="turns"></div></div>
-        <div class="col" data-row="2"><div class="colhead down"></div><div class="turns"></div></div>
+    <div id="busy" class="busy" hidden><i></i></div>
+    <div id="stage">
+      <div id="empty" class="empty">
+        <h2>Choose a neuron to start</h2>
+        <p>You ask a question once. The model answers three times: with the neuron <b class="up">boosted</b>,
+          left <b>as is</b>, and <b class="down">suppressed</b>.</p>
+        <button id="try-example" class="primary" type="button">Try an example</button>
+        <button id="go-find" class="secondary" type="button">Find neurons in your own words</button>
+        <button id="surprise" class="link" type="button">Surprise me</button>
       </div>
-      <div id="c-dots" class="dots"><i class="on"></i><i></i><i></i></div>
-      <div id="c-reads" class="toks" hidden></div>
+      <div id="lanes" hidden>
+        <p id="asked" class="asked"></p>
+        <article class="lane up" data-row="0"><h3>▲ Boosted <small class="dose"></small></h3><div class="say"></div></article>
+        <article class="lane" data-row="1"><h3>Normal</h3><div class="say"></div></article>
+        <article class="lane down" data-row="2"><h3>▼ Suppressed <small class="dose"></small></h3><div class="say"></div></article>
+      </div>
     </div>
-    <div class="npane" id="nt-lens"></div>
-    <div class="npane" id="nt-examples"></div>
-    <form id="composer">
-      <div class="row ctl">
-        <span class="seg" id="c-mode"><button type="button" data-m="add" class="on">add</button><button type="button" data-m="mul">×</button></span>
-        <span class="seg" id="c-dir"><button type="button" data-d="writes" class="on">writes</button><button type="button" data-d="reads">reads you</button></span>
-        <span class="stepper"><button type="button" id="c-minus" aria-label="smaller dose">−</button><input id="c-dose" class="mono" inputmode="decimal" aria-label="dose" value="0.8"><button type="button" id="c-plus" aria-label="larger dose">+</button></span>
-        <button type="button" id="c-clear" class="dim">clear</button>
+    <form id="composer" autocomplete="off">
+      <div id="suggest" class="suggest"></div>
+      <div class="ask">
+        <input id="prompt" placeholder="Ask anything…" aria-label="Question" enterkeyhint="send">
+        <button id="send" class="send" type="submit" aria-label="Ask">↑</button>
       </div>
-      <div class="row"><input id="c-input" placeholder="Who are you?" aria-label="message" autocomplete="off" enterkeyhint="send"><button id="c-go" type="submit" class="go">run</button></div>
+      <label class="strength"><span>Strength</span>
+        <input id="strength" type="range" min="0" max="2" step="0.05" value="0.8" aria-label="Strength">
+        <output id="strength-v">0.8</output></label>
     </form>
   </section>
 
-  <nav id="panes">
-    <button data-p="browse" class="on">model</button><button data-p="neuron">neuron</button>
+  <!-- Explore: choose and understand neurons. Left page when open, bottom half in portrait. -->
+  <section id="explore" class="pane">
+    <header class="top">
+      <div class="seg" id="xtabs" role="tablist">
+        <button data-x="about" type="button" role="tab">Neuron</button><button data-x="find" type="button" role="tab" class="on">Find</button><button data-x="browse" type="button" role="tab">Browse</button>
+      </div>
+    </header>
+
+    <div class="xpane" id="x-about">
+      <p id="about-none" class="hint">No neuron chosen yet. Find one, or browse.</p>
+      <div id="about" hidden>
+        <h2 id="a-title"></h2>
+        <p id="a-sub" class="fine"></p>
+        <input id="a-name" placeholder="Give it a name (optional)" aria-label="Neuron name" enterkeyhint="done">
+        <div class="fact"><h4>Boosting it favors words like</h4><div id="a-up" class="words"></div></div>
+        <div class="fact"><h4>Suppressing it favors</h4><div id="a-down" class="words"></div></div>
+        <details id="d-fires"><summary>Where it fires</summary><div id="a-fires" class="more"></div></details>
+        <details id="d-read"><summary>Test it on your own text</summary>
+          <div class="more">
+            <form id="read-form" class="ask"><input id="read-text" placeholder="Type a sentence…" aria-label="Text to read" enterkeyhint="go"><button id="read-go" class="secondary small" type="submit">Read</button></form>
+            <div id="read-out" class="toks"></div>
+          </div>
+        </details>
+        <details id="d-next"><summary>Effect on the next word</summary><div id="a-next" class="more"></div></details>
+        <details id="d-links"><summary>Connected neurons</summary><ol id="a-links" class="list more"></ol></details>
+        <details id="d-adv"><summary>Advanced</summary>
+          <div class="more">
+            <div class="opt"><span>Strength means</span>
+              <span class="seg small" id="mode"><button type="button" data-m="add" class="on">push</button><button type="button" data-m="mul">multiply</button></span></div>
+            <label class="opt"><span>Keep the conversation going</span><input id="keep" type="checkbox"></label>
+            <p id="a-tech" class="fine mono"></p>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="xpane on" id="x-find">
+      <form id="find-form">
+        <p class="hint">Type any text. See which neurons react to it most.</p>
+        <textarea id="find-text" rows="2" spellcheck="false" placeholder="e.g. I can't wait for the weekend!" aria-label="Text to search with"></textarea>
+        <button id="find-go" class="primary" type="submit">Find neurons</button>
+      </form>
+      <p id="find-note" class="fine"></p>
+      <div id="find-toks" class="toks"></div>
+      <ol id="find-rows" class="list"></ol>
+      <details id="find-filters" hidden><summary>Filters</summary>
+        <div class="more">
+          <div class="opt"><span>Reacts</span><span class="seg small" id="find-sign"><button type="button" data-s="both" class="on">either way</button><button type="button" data-s="+">up</button><button type="button" data-s="-">down</button></span></div>
+          <div class="opt"><span>Layers</span><span><input id="find-lo" class="num" value="0" inputmode="numeric" aria-label="from layer"> to <input id="find-hi" class="num" value="23" inputmode="numeric" aria-label="to layer"></span></div>
+        </div>
+      </details>
+    </div>
+
+    <div class="xpane" id="x-browse">
+      <h4 class="label">Your neurons</h4>
+      <ol id="saved-rows" class="list"></ol>
+      <h4 class="label">All 86,016 neurons</h4>
+      <p class="fine" id="map-legend">Each band is one of the 24 layers. Tap a band, then slide across it.</p>
+      <div class="mapwrap"><canvas id="map"></canvas><div id="map-tip" class="tip" hidden></div></div>
+      <form id="goto" class="goto">
+        <label>Layer <input id="go-l" class="num" inputmode="numeric" aria-label="layer"></label>
+        <label>Neuron <input id="go-n" class="num wide" inputmode="numeric" aria-label="neuron"></label>
+        <button class="secondary small" type="submit">Open</button>
+      </form>
+    </div>
+  </section>
+
+  <nav id="tabbar">
+    <button data-p="steer" class="on" type="button">Steer</button><button data-p="explore" type="button">Explore</button>
   </nav>
 </div>
 
-<div id="boot">
-  <div class="card">
-    <h1>Neuron explorer <span class="dim">on your phone</span></h1>
-    <p>Steer single MLP neurons of <b>Qwen3.5-0.8B</b> and watch what the model writes, fully on this device with WebGPU.
-      Every neuron of every layer (24 × 3,584) can be pushed up or down, read on your own text, and traced through the
-      weights. A port of <a href="https://github.com/lyramakesmusic/neuron-explorer" target="_blank" rel="noopener">lyramakesmusic/neuron-explorer</a>.</p>
-    <ul id="boot-facts" class="mono dim"></ul>
-    <div id="boot-progress" hidden><div class="bar-out"><div class="bar-in"></div></div><div id="boot-msg" class="mono dim"></div></div>
-    <div class="row"><button id="boot-go" class="go big">Load model</button><button id="boot-clear" class="dim" hidden>forget downloaded weights</button></div>
-    <p id="boot-err" class="err" hidden></p>
+<div id="toast" role="status" hidden></div>
+
+<div id="welcome">
+  <div class="w-card">
+    <svg class="w-mark" viewBox="0 0 48 48" aria-hidden="true"><rect x="23" y="6" width="2" height="36" rx="1" fill="#333"/><circle cx="12" cy="24" r="7" fill="#ffb547"/><circle cx="36" cy="24" r="7" fill="#ff4f9a"/></svg>
+    <h1>Neuron Explorer</h1>
+    <p class="lede">Turn a single neuron inside an AI model up or down, and watch its answers change.</p>
+    <ol class="steps">
+      <li><b>Pick a neuron</b><span>any of 86,016 in Qwen3.5</span></li>
+      <li><b>Ask anything</b><span>it answers three times</span></li>
+      <li><b>Compare</b><span><i class="up">boosted</i> · normal · <i class="down">suppressed</i></span></li>
+    </ol>
+    <button id="w-go" class="primary big" type="button">Download the model</button>
+    <p id="w-note" class="fine">1.5 GB, once. Use Wi-Fi. It stays on this device.</p>
+    <div id="w-progress" hidden><div class="meter"><i></i></div><p id="w-msg" class="fine"></p></div>
+    <p id="w-err" class="err" hidden></p>
+    <details id="w-more"><summary>Technical details</summary>
+      <ul id="w-facts" class="fine"></ul>
+      <button id="w-forget" class="link" type="button" hidden>Remove the downloaded model</button>
+    </details>
   </div>
 </div>
+
 <script type="module" src="app/main.js"></script>
 </body>
 </html>

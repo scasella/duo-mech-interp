@@ -1,55 +1,57 @@
 // node tests/screens.mjs <served base url> <hub mirror url> <out dir>
-// Loads the real app (real model, SwiftShader WebGPU) and screenshots it at iPhone Duo viewport sizes
-// (Safari 27.1 figures from the WebKit blog) to check the layouts.
+// Loads the real app (real model, SwiftShader WebGPU) and screenshots the main moments at iPhone Duo viewport sizes
+// (Safari 27.1 figures from the WebKit blog): first screen after loading, an example run (real model output, stopped
+// after a few tokens because a software GPU is slow), Explore's tabs, each layout.
 import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const { chromium } = require(process.env.PLAYWRIGHT || "playwright");
 const [base, hub, out] = process.argv.slice(2);
-const sizes = [
-  ["inner-landscape", 951, 620, ""],
-  ["inner-landscape-book", 951, 620, "&duo=book"],
-  ["inner-portrait", 669, 902, ""],
-  ["inner-portrait-laptop", 669, 902, "&duo=laptop"],
-  ["outer-portrait", 382, 618, ""],
-  ["outer-landscape", 594, 406, ""],
-  ["split-view", 385, 609, ""],
-];
 const browser = await chromium.launch({ args: ["--enable-unsafe-webgpu", "--enable-features=Vulkan"] });
-const ctx = await browser.newContext({ viewport: { width: 951, height: 620 }, deviceScaleFactor: 2, hasTouch: true, isMobile: false });
+const ctx = await browser.newContext({ viewport: { width: 951, height: 620 }, deviceScaleFactor: 2, hasTouch: true });
+// the full calibration corpus takes seconds on a phone but hours on a software GPU: serve a two-passage one
+await ctx.route(/\/app\/corpus\.js(\?.*)?$/, route => route.fulfill({ contentType: "application/javascript", body:
+  "export const CORPUS = [\"The river had flooded twice that spring, and by May the lower fields were still soft.\", " +
+  "\"Friday night! I can't wait for the weekend, we're going to the beach.\"];" }));
 const page = await ctx.newPage();
-page.on("console", m => console.log("[page]", m.text()));
 page.on("pageerror", e => console.log("[pageerror]", e.message));
-const url = `${base}/index.html?hub=${encodeURIComponent(hub)}&nocache&autoload#L12N1234`;
-await page.goto(url);
-await page.waitForFunction(() => document.getElementById("boot").hidden, null, { timeout: 0, polling: 1000 });
-await page.waitForFunction(() => document.querySelector("#c-lens .chip"), null, { timeout: 0, polling: 1000 });
-// fill the three columns with sample text so the layout can be judged (screenshots only; the app never does this)
-if (process.env.FAKE_CHAT) await page.evaluate(() => {
-  const t = ["I am a curious traveller from the coast, here to help you find your way.", "I am Qwen3.5, a large language model developed by Tongyi Lab.", "I am Q3, or **Q3**, or **Q3**."];
-  document.querySelectorAll("#c-thread .turns").forEach((el, i) => (el.innerHTML = `<div class="turn"><div class="q">Who are you?</div><div class="a">${t[i]}</div></div>`));
-});
-for (const [name, w, h, q] of sizes) {
-  await page.evaluate(sim => { window.__duoSim = sim || null; }, q.replace("&duo=", ""));
+page.on("console", m => { if (m.type() === "error") console.log("[console.error]", m.text()); });
+const shot = async (name, w, h, sim = null) => {
+  await page.evaluate(s => { window.__duoSim = s; }, sim);
   await page.setViewportSize({ width: w, height: h });
   await page.evaluate(() => dispatchEvent(new Event("resize")));
-  await page.waitForTimeout(800);
-  await page.screenshot({ path: `${out}/${name}.png` });
+  await page.waitForTimeout(600);
+  await page.screenshot({ path: `${out}/v2-${name}.png` });
   console.log("shot", name, await page.evaluate(() => document.documentElement.dataset.layout));
-}
-// the neuron pane on a narrow screen, and the lens tab on the inner display
-await page.evaluate(() => { window.__duoSim = null; });
-await page.setViewportSize({ width: 382, height: 618 });
-await page.evaluate(() => dispatchEvent(new Event("resize")));
-await page.click('#panes button[data-p="neuron"]');
-await page.waitForTimeout(500);
-await page.screenshot({ path: `${out}/outer-portrait-neuron.png` });
+};
+await page.goto(`${base}/index.html?hub=${encodeURIComponent(hub)}&nocache&autoload`);
+await page.waitForFunction(() => document.getElementById("welcome").hidden, null, { timeout: 0, polling: 1000 });
+await shot("start-inner", 951, 620);
+await shot("start-outer", 382, 618);
 await page.setViewportSize({ width: 951, height: 620 });
-await page.evaluate(() => dispatchEvent(new Event("resize")));
-await page.click('#ntabs button[data-nt="lens"]');
-await page.waitForFunction(() => document.querySelector("#cn li .w b"), null, { timeout: 0, polling: 1000 });
-await page.screenshot({ path: `${out}/inner-landscape-lens.png` });
-await page.click('#bt-map canvas', { position: { x: 300, y: 300 } });
-await page.waitForTimeout(800);
-await page.screenshot({ path: `${out}/inner-landscape-sheet.png` });
-console.log("extra shots done");
+await page.tap("#try-example");
+await page.waitForFunction(() => [...document.querySelectorAll(".lane .say")].every(s => s.textContent.length > 8 && !s.classList.contains("wait")), null, { timeout: 0, polling: 1000 });
+await page.waitForTimeout(+(process.env.RUN_MS || 30000));
+if (await page.$("#send.stop")) await page.tap("#send");
+await page.waitForFunction(() => !document.querySelector("#send.stop"), null, { timeout: 0 });
+await shot("steer-inner", 951, 620);
+await shot("steer-book", 951, 620, "book");
+await shot("steer-portrait", 669, 902);
+await shot("steer-laptop", 669, 902, "laptop");
+await shot("steer-outer", 382, 618);
+await shot("steer-split", 385, 609);
+await page.tap('#tabbar button[data-p="explore"]');
+await page.tap('#xtabs button[data-x="about"]');
+await page.waitForFunction(() => document.querySelectorAll("#a-up span").length > 0, null, { timeout: 0 });
+await shot("about-outer", 382, 618);
+await page.tap("#d-links summary");
+await page.waitForFunction(() => document.querySelector("#a-links .w")?.textContent, null, { timeout: 0 });
+await shot("about-links-outer", 382, 618);
+await page.tap('#xtabs button[data-x="browse"]');
+await shot("browse-outer", 382, 618);
+await page.tap('#xtabs button[data-x="find"]');
+await page.fill("#find-text", "I can't wait for the weekend!");
+await page.tap("#find-go");
+await page.waitForFunction(() => document.querySelector("#find-rows li[data-l] .w")?.textContent, null, { timeout: 0, polling: 1000 });
+await shot("find-outer", 382, 618);
+await shot("find-inner", 951, 620);
 await browser.close();

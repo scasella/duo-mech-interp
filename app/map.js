@@ -173,17 +173,7 @@ export function createMap(canvas, { L, I, types, onOpen, onPreview, onLayer }) {
     const tap = down && Math.hypot(ev.clientX - down.x, ev.clientY - down.y) < 10;
     down = null;
     if (sheet == null) {
-      if (p && tap) {
-        if (overlay && !neutral && p.inBand) {  // with activation scores shown, a tap opens the strongest neuron near it
-          const span = Math.max(2, Math.round(I / (W - pad.l - pad.r) * 6));
-          let best = p.n, bv = 0;
-          for (let n = Math.max(0, p.n - span); n < Math.min(I, p.n + span); n++) {
-            const v = Math.abs(overlay[p.layer * I + n]); if (v > bv) { bv = v; best = n; }
-          }
-          if (bv > 0.3) { onOpen?.(p.layer, best); return; }
-        }
-        setSheet(p.layer);
-      }
+      if (p && tap) setSheet(p.layer);  // one gesture, one outcome: a band always opens its sheet
       return;
     }
     if (p?.back && tap) { setSheet(null); return; }

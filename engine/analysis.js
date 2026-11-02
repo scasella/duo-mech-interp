@@ -347,26 +347,33 @@ export class Explorer {
 
   // Runs a corpus through the model in chunks (each its own sequence; position 0, the attention sink, is skipped) and
   // keeps each neuron's largest and most negative activation and where they happened (top `keep` chunks per sign).
-  async calibrate(texts, { onProgress = () => {}, keep = 4, cancel = { stop: false } } = {}) {
-    return this.lock(async () => {
-      const m = this.m, g = this.g, L = m.L, I = m.I;
-      const chunks = [];
-      for (const t of texts) {
-        const ids = this.tok.encode(t);
-        for (let i = 0; i < ids.length; i += m.maxT - 1) {
-          const c = ids.slice(i, i + m.maxT);
-          if (c.length > 8) chunks.push(c);
-        }
+  // Takes the GPU lock one chunk at a time, so it can run in the background while the explorer is in use (anything
+  // else queued gets the GPU between chunks).
+  async calibrate(texts, { onProgress = () => {}, keep = 4, cancel = { stop: false }, hold = null } = {}) {
+    const m = this.m, g = this.g, L = m.L, I = m.I;
+    const chunks = [];
+    for (const t of texts) {
+      const ids = this.tok.encode(t);
+      for (let i = 0; i < ids.length; i += m.maxT - 1) {
+        const c = ids.slice(i, i + m.maxT);
+        if (c.length > 8) chunks.push(c);
       }
-      const pos = new Float32Array(L * I).fill(0), neg = new Float32Array(L * I).fill(0);
-      const topP = new Array(L * I), topN = new Array(L * I);
-      const cap = g.buffer(L * m.maxT * I * 4, "calcap");
+    }
+    const pos = new Float32Array(L * I).fill(0), neg = new Float32Array(L * I).fill(0);
+    const topP = new Array(L * I), topN = new Array(L * I);
+    const cap = g.buffer(L * m.maxT * I * 4, "calcap");
+    try {
       for (let c = 0; c < chunks.length && !cancel.stop; c++) {
-        const ids = chunks[c], T = ids.length;
-        m.reset(0);
-        m.prefill(0, ids, { capture: cap, capT: T });
-        g.run("extremes", K.tokenExtremes, [cap, this.b.ext], [Math.ceil(I / 256), L], [L, T, I, 1]);
-        const e = new Float32Array(await g.read(this.b.ext, L * I * 16));
+        while (hold && hold()) await new Promise(r => setTimeout(r, 300));  // e.g. wait while a steered run decodes
+        const e = await this.lock(async () => {
+          const ids = chunks[c], T = ids.length;
+          m.reset(0);
+          m.prefill(0, ids, { capture: cap, capT: T });
+          g.run("extremes", K.tokenExtremes, [cap, this.b.ext], [Math.ceil(I / 256), L], [L, T, I, 1]);
+          const out = new Float32Array(await g.read(this.b.ext, L * I * 16));
+          m.reset(0);
+          return out;
+        });
         for (let i = 0; i < L * I; i++) {
           const mx = e[i * 4], amx = e[i * 4 + 1], mn = e[i * 4 + 2], amn = e[i * 4 + 3];
           if (mx > pos[i]) pos[i] = mx;
@@ -376,12 +383,13 @@ export class Explorer {
         }
         onProgress({ frac: (c + 1) / chunks.length, chunk: c + 1, chunks: chunks.length });
       }
-      g.free(cap);
-      m.reset(0);
-      this.scale = { pos, neg };
-      this.examples = { chunks, topP, topN };
-      return this.scale;
-    });
+    } finally {
+      await this.lock(async () => g.free(cap));
+    }
+    if (cancel.stop) return null;
+    this.scale = { pos, neg };
+    this.examples = { chunks, topP, topN };
+    return this.scale;
   }
 
   // A neuron's strongest calibration contexts: [{sign, act, ids, at}] (window of tokens around the max)

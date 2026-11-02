@@ -5,22 +5,25 @@ iPhone Duo's two displays and fold), on WebGPU, with no server. It is an on-devi
 [lyramakesmusic/neuron-explorer](https://github.com/lyramakesmusic/neuron-explorer) (MIT), which does the same for
 Qwen3.5-4B with a Python server and a GPU sweep.
 
-Every MLP neuron (24 layers × 3,584) can be pushed up and down while the model chats, read on your own text, and traced
-through the weights:
+Every MLP neuron (24 layers × 3,584) can be turned up or down while the model answers. The app has two places:
 
-- **chat** (writes): three conversations decoded side by side from the same prompt: neuron pushed **up**, **untouched**,
-  pushed **down**. Doses are in the reference's unit, a fraction of the median residual norm leaving the layer (`add`),
-  or a multiplier on the activation (`×`). Multi-turn: each column keeps its own history.
-- **reads you**: your text, each token shaded by the neuron's activation.
-- **lens**: logit lens of the neuron's down column (what it writes, read through the final norm and unembedding),
-  steer lens (next-token log-prob change when pushed ±0.8 on three prompts, and the KL), and direct-path connections
-  to earlier and later neurons (gate·up weights, z-scored per layer).
-- **examples**: the neuron's strongest contexts on a small built-in corpus, shaded live.
-- **fires**: paste text, tap a token, see which neurons fire hardest there (scored against each neuron's calibrated
-  range); the map lights up with the same scores.
-- **map**: the 24 MLP sheets stacked (full-attention layers marked); tap a layer for its 64 × 56 sheet, drag to preview
-  neurons (logit lens in the tooltip), release to open. The open neuron's connection web is drawn on top.
-- names you give neurons stay in the browser (localStorage); `#L12N1234` links open a neuron.
+- **Steer** (the experiment): ask once, read three answers: the neuron **boosted**, left **as is**, and
+  **suppressed**. One strength slider (in the reference's unit: a fraction of the median residual norm leaving the
+  layer), suggested questions, stop at any time. Switching neurons offers to ask the last question again, so the same
+  question can be compared across neurons.
+- **Explore** (choose and understand):
+  - **Find**: type any text; see the neurons that react most to it (scored against each neuron's range on a small
+    built-in corpus, measured once in the background), tap a word for just that word's neurons.
+  - **Neuron**: the words boosting or suppressing it favors (logit lens), a name, and behind collapsed sections:
+    where it fires in sample texts, how it reacts to your own text, its effect on the next word (steer lens), its
+    connected neurons (direct path through the weights), and advanced options (multiply instead of push, keep a
+    multi-turn conversation).
+  - **Browse**: your saved and recent neurons, a map of all 24 layers (tap a band for its sheet, slide to preview,
+    lift to open), and opening a neuron by number.
+
+First visit: a three-step welcome and one button (download, 1.5 GB once). After loading: **Try an example** (a
+neuron whose push visibly changes answers), **Find neurons in your own words**, or **Surprise me**. `#L12N1234` links
+open a neuron; names and saved neurons stay in the browser.
 
 ## How it runs on the phone
 
@@ -44,10 +47,10 @@ where enabled, by the fold itself:
 
 | where | layout |
 |---|---|
-| outer display (382 × ~600), split view (385 wide), outer landscape | one pane at a time with a switcher; the three chat columns become a swipeable pager |
-| inner display, landscape (951 × ~600) | model on the left page, neuron on the right page, split at the fold |
+| outer display (382 × ~600), split view (385 wide), outer landscape | Steer and Explore as two tabs; the three answers stacked |
+| inner display, landscape (951 × ~600) | Explore on the left page, Steer on the right page, split at the fold |
 | inner display folded like a book | the same, split exactly at the reported fold |
-| inner display, portrait (669 × ~880) | neuron (three chat columns) on top, composer and model below |
+| inner display, portrait (669 × ~880) | the three answers side by side on top; the question box and Explore below |
 | inner display folded like a laptop | the same: the top half is the screen, the bottom half the deck |
 
 The fold is read from the **Viewport Segments API** (`window.viewport.segments`) and the **Device Posture API**
