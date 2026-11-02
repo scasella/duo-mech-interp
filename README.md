@@ -64,7 +64,8 @@ It is a static site. Serve the folder over HTTPS (WebGPU needs a secure context)
 - **locally**: `python3 -m http.server 8000` and open `http://localhost:8000` (localhost counts as secure).
 
 The first load downloads 1.5 GB from Hugging Face (use Wi-Fi); "forget downloaded weights" on the start screen removes
-the stored copy. Needs iOS 26 or later (WebGPU is on by default since Safari 26).
+the stored copy. Safari deletes a website's stored data after about a week without a visit; adding the page to the Home
+Screen keeps it. Needs iOS 26 or later (WebGPU is on by default since Safari 26).
 
 ## Tests
 
@@ -75,8 +76,15 @@ node tests/engine.mjs <served url> <expected url> <hub mirror url>        # same
 node tests/screens.mjs <served url> <hub mirror url> <out dir>           # screenshots at iPhone Duo viewport sizes
 ```
 
-`engine.mjs` compares the WGSL engine with Hugging Face transformers on the same prompt: next-token logits, MLP
-activations at layers 0/3/11/23, and greedy continuations with a neuron pushed up, untouched and down.
+`engine.mjs` compares the WGSL engine with Hugging Face transformers (float32) on the same chat prompt. Last run
+(headless Chromium, SwiftShader WebGPU):
+
+| check | result |
+|---|---|
+| tokenizer, 13 strings (code, CJK, emoji ZWJ, RTL, chat template) | 13/13 identical ids, exact round trip |
+| next-token logits | same top-1, top-20 overlap 20/20, relative error 1.9%, correlation 0.9998 |
+| neuron activations (input of `down_proj`), layers 0 / 3 / 11 / 23 | relative error 1.6–4.2% (int8 weights) |
+| greedy decode, three rows in one batch: L12 N1234 pushed +8 / untouched / −8 | +8 and untouched: tokens match; −8: first 3 match, the 4th is a near tie in the reference itself ("3" 18.050 vs "wen" 18.011) |
 
 ## What is not ported
 
@@ -84,6 +92,18 @@ The reference's offline GPU sweep (every neuron × doses × prompts, ranked by w
 controls), its UMAP rollout map, FineFineWeb exemplars, R / J++ / S lenses, attention-head analysis and the Claude
 agent tab need either a GPU pod or a server. Here the corpus-based pieces (activation ranges, examples) come from a
 small on-device calibration pass instead.
+
+## Files
+
+| | |
+|---|---|
+| `index.html`, `app/` | UI: `main.js` (panels, chat, fires, lens, examples), `layout.js` (fold / posture / width modes), `map.js` (layer stack and sheets on a canvas), `corpus.js` (calibration passages written for this project) |
+| `engine/gpu.js` | WebGPU device, buffers, cached pipelines / uniforms / bind groups |
+| `engine/kernels.js`, `engine/kernels_qwen35.js` | WGSL: int8 quantize on load, matvec / tiled matmul / transposed matvec on int8 weights, RMSNorm, gated attention with partial RoPE over a KV cache, Gated DeltaNet conv + delta rule + gated norm, SwiGLU with the neuron hook |
+| `engine/model.js` | Qwen3.5 decoder: streaming loader, Cache Storage, batched rows, forward with pushes / capture / residual snapshots |
+| `engine/tokenizer.js` | byte-level BPE from `tokenizer.json`, Qwen chat template |
+| `engine/analysis.js` | explorer operations: steer, read, lens, steer lens, connections, calibration, fires scoring |
+| `tests/` | reference scripts (HF tokenizers / transformers) and headless-Chromium checks |
 
 ## License
 

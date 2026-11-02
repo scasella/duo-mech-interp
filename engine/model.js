@@ -214,6 +214,8 @@ export class Model {
           g.run("quant_" + src, K.quantize(src), [stage, t.dst.w, t.dst.s], [stride, Math.ceil(groups / stride)],
             [groups, cols / K.QG, t.row + r0, stride]);
           g.submit();
+          // keep queued uploads bounded (each batch is a 16 MB staging copy until the GPU consumes it)
+          if ((r0 / perBatch) % 4 === 3) await g.idle();
           doneBytes += need;
           onProgress({ phase: "download", frac: doneBytes / total, bytes: doneBytes, total });
           if (g.lost) throw new Error("GPU device lost while loading");

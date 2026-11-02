@@ -296,3 +296,22 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i < p.n) { y[i] = x[i] * (${offset ? "1.0 + w[i]" : "w[i]"}); }
 }`;
+
+// Column norms of W[R, K]: y[k] = |W[:, k]|. One thread per 4 columns.
+export const colNorms = /* wgsl */ `
+struct P { R: u32, K: u32, pad0: u32, pad1: u32 };
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> w: array<u32>;
+@group(0) @binding(2) var<storage, read> sc: array<f32>;
+@group(0) @binding(3) var<storage, read_write> y: array<vec4<f32>>;
+${unpack}
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let kw = gid.x;
+  let K4 = p.K >> 2u;
+  if (kw >= K4) { return; }
+  let G = p.K / 128u;
+  var acc = vec4<f32>(0.0);
+  for (var r = 0u; r < p.R; r++) { let v = q4(w[r * K4 + kw]) * sc[r * G + (kw >> 5u)]; acc += v * v; }
+  y[kw] = sqrt(acc);
+}`;

@@ -10,6 +10,7 @@ export function createMap(canvas, { L, I, types, onOpen, onPreview, onLayer }) {
   const ctx = canvas.getContext("2d");
   const COLS = 64, ROWS = Math.ceil(I / COLS);
   let overlay = null;        // Float32Array [L * I] signed scores, or null
+  let neutral = false;       // overlay is a weight statistic (unsigned, drawn in grey-blue), not an activation
   let focus = null;          // {layer, n}
   let web = null;            // {up: [{layer, n, sign}], down: [...]}
   let marks = new Set();     // "l:n" of named neurons
@@ -28,6 +29,7 @@ export function createMap(canvas, { L, I, types, onOpen, onPreview, onLayer }) {
 
   const color = v => {
     const a = Math.min(1, Math.abs(v));
+    if (neutral) return [40 + 90 * a, 60 + 110 * a, 70 + 130 * a];
     const c = v >= 0 ? UP : DOWN;
     return [c[0] * a, c[1] * a, c[2] * a];
   };
@@ -172,7 +174,7 @@ export function createMap(canvas, { L, I, types, onOpen, onPreview, onLayer }) {
     down = null;
     if (sheet == null) {
       if (p && tap) {
-        if (overlay && p.inBand) {  // with an overlay, a tap opens the strongest neuron near the tap
+        if (overlay && !neutral && p.inBand) {  // with activation scores shown, a tap opens the strongest neuron near it
           const span = Math.max(2, Math.round(I / (W - pad.l - pad.r) * 6));
           let best = p.n, bv = 0;
           for (let n = Math.max(0, p.n - span); n < Math.min(I, p.n + span); n++) {
@@ -196,7 +198,7 @@ export function createMap(canvas, { L, I, types, onOpen, onPreview, onLayer }) {
   resize();
 
   return {
-    setOverlay(v) { overlay = v; draw(); },
+    setOverlay(v, opts = {}) { overlay = v; neutral = !!opts.neutral; draw(); },
     setFocus(f) { focus = f; draw(); },
     setWeb(w) { web = w; draw(); },
     setMarks(m) { marks = m; draw(); },

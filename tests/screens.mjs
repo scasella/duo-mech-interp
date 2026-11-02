@@ -36,4 +36,20 @@ for (const [name, w, h, q] of sizes) {
   await page.screenshot({ path: `${out}/${name}.png` });
   console.log("shot", name, await page.evaluate(() => document.documentElement.dataset.layout));
 }
+// the neuron pane on a narrow screen, and the lens tab on the inner display
+await page.evaluate(() => { window.__duoSim = null; });
+await page.setViewportSize({ width: 382, height: 618 });
+await page.evaluate(() => dispatchEvent(new Event("resize")));
+await page.click('#panes button[data-p="neuron"]');
+await page.waitForTimeout(500);
+await page.screenshot({ path: `${out}/outer-portrait-neuron.png` });
+await page.setViewportSize({ width: 951, height: 620 });
+await page.evaluate(() => dispatchEvent(new Event("resize")));
+await page.click('#ntabs button[data-nt="lens"]');
+await page.waitForFunction(() => document.querySelector("#cn li .w b"), null, { timeout: 0, polling: 1000 });
+await page.screenshot({ path: `${out}/inner-landscape-lens.png` });
+await page.click('#bt-map canvas', { position: { x: 300, y: 300 } });
+await page.waitForTimeout(800);
+await page.screenshot({ path: `${out}/inner-landscape-sheet.png` });
+console.log("extra shots done");
 await browser.close();

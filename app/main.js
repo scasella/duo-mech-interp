@@ -37,9 +37,10 @@ let job = null;  // {cancel} of the running steer
 
 // ---------- layout ----------
 
-let layoutMode = "narrow";
+let layoutMode = "narrow", lastMeasure = null;
 watch(m => {
   layoutMode = m.mode;
+  lastMeasure = m;
   // the composer sits under the neuron in side-by-side and narrow layouts, and on the deck (bottom pane) when stacked
   const composer = $("#composer");
   if (m.mode === "tall" || m.mode === "laptop") $("#browse").insertBefore(composer, $("#btabs"));
@@ -99,6 +100,9 @@ async function boot() {
   facts.push(`GPU: ${[info.vendor, info.architecture].filter(Boolean).join(" ") || "available"}; max buffer ${(lim.maxStorageBufferBindingSize / 2 ** 20) | 0} MiB`);
   facts.push("Model: Qwen3.5-0.8B (Apache-2.0), 24 layers: 18 Gated DeltaNet + 6 gated attention, SwiGLU MLP, 3,584 neurons per layer");
   facts.push("Weights: int8 on the GPU, about 0.8 GB. First load streams 1.5 GB from Hugging Face; later loads read the copy kept in this browser");
+  const lm = lastMeasure;
+  facts.push(`Layout: ${lm.mode}` + (lm.segmented ? ", fold from the Viewport Segments API" :
+    lm.mode === "narrow" ? "" : ", fold assumed at the middle (Safari › Advanced › Feature Flags › Viewport Segments API gives the exact fold)"));
   if (lim.maxStorageBufferBindingSize < 255 * 2 ** 20) fail("This GPU's storage buffers are too small for the embedding table (needs 243 MiB).");
   const cached = await hasCache();
   if (cached) { facts.push("Weights are already stored in this browser."); $("#boot-go").textContent = "Open"; $("#boot-clear").hidden = false; }
@@ -147,15 +151,33 @@ function start() {
     L: model.L, I: model.I, types: model.types,
     onOpen: (l, n) => openNeuron(l, n),
     onPreview: previewNeuron,
-    onLayer: l => ($("#map-legend").textContent = l == null ? "tap a layer to see its sheet, then drag across neurons to preview" : "drag across the sheet to preview, release to open · tap the title to go back"),
+    onLayer: l => {
+      previewNeuron(null);
+      $("#map-legend").textContent = l == null ? "tap a layer to see its sheet, then drag across neurons to preview" : "drag across the sheet to preview, release to open · tap the title to go back";
+    },
   });
   map.setMarks(markSet());
   paintStatus();
+  showWeightMap();
   const h = parseHash();
   const f = h || store.get("focus", null);
   if (f) openNeuron(f.layer, f.n, { pane: false });
   else { renderChatHeads(); $("#f-meta").textContent = "open one from the map, the list, or type L12 N1234 above"; }
   renderRunCal();
+}
+
+// Until a text is run, the map shows each neuron's |down column| relative to its layer (grey-blue).
+async function showWeightMap() {
+  const v = await ex.writeNorms();
+  if (state.run) return;
+  const ov = new Float32Array(v.length), I = model.I;
+  for (let l = 0; l < model.L; l++) {
+    const row = Array.from(v.subarray(l * I, (l + 1) * I)).sort((a, b) => a - b);
+    const lo = row[Math.floor(I * 0.5)], hi = row[Math.floor(I * 0.999)];
+    for (let n = 0; n < I; n++) ov[l * I + n] = Math.max(0, (v[l * I + n] - lo) / Math.max(1e-6, hi - lo));
+  }
+  map.setOverlay(ov, { neutral: true });
+  $("#map-legend").textContent = "brightness: how hard each neuron can write (|down column|, per layer) · tap a layer for its sheet";
 }
 
 function parseHash() {

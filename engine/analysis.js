@@ -229,16 +229,19 @@ export class Explorer {
 
   // Logit lens of the neuron's down column: lm_head(final_norm(+d)), top k each way.
   async lens(layer, n, k = 12) {
-    const key = `${layer}:${n}:${k}`;
-    if (this.lensCache.has(key)) return this.lensCache.get(key);
-    const res = await this.lock(async () => {
-      const m = this.m, g = this.g, st = m.st, d = m.layers[layer].down;
-      g.run("column", K.column, [d.w, d.s, st.last], Math.ceil(m.H / 64), [m.H, m.I, n, F(1)]);
-      const lg = await m.logitsRow(0);
-      return topk(lg, k, this.tok);
-    });
-    this.lensCache.set(key, res);
-    return res;
+    const key = `${layer}:${n}`;
+    let res = this.lensCache.get(key);
+    if (!res || res.up.length < k) {
+      res = await this.lock(async () => {
+        const m = this.m, g = this.g, st = m.st, d = m.layers[layer].down;
+        g.run("column", K.column, [d.w, d.s, st.last], Math.ceil(m.H / 64), [m.H, m.I, n, F(1)]);
+        const lg = await m.logitsRow(0);
+        return topk(lg, Math.max(k, 16), this.tok);
+      });
+      if (this.lensCache.size > 4000) this.lensCache.clear();
+      this.lensCache.set(key, res);
+    }
+    return { up: res.up.slice(0, k), down: res.down.slice(0, k), upIds: res.upIds.slice(0, k), downIds: res.downIds.slice(0, k) };
   }
 
   // Steer lens: next-token log-probability change when the neuron is pushed +dose / -dose on a few chat prompts
@@ -320,6 +323,22 @@ export class Explorer {
     return res;
   }
 
+  // |down column| of every neuron, [L * I]: how hard each neuron can write into the residual stream.
+  async writeNorms() {
+    if (this._wn) return this._wn;
+    this._wn = await this.lock(async () => {
+      const m = this.m, g = this.g, I = m.I;
+      for (let l = 0; l < m.L; l++) {
+        const d = m.layers[l].down;
+        g.run("colnorms", K.colNorms, [d.w, d.s, { buffer: this.b.out, offset: l * I * 4, size: I * 4 }], Math.ceil(I / 4 / 64), [m.H, I, 0, 0]);
+      }
+      const v = new Float32Array(await g.read(this.b.out, m.L * I * 4));
+      for (let n = 0; n < I * m.L; n++) this.colNorm.set(Math.floor(n / I) * 1e6 + (n % I), v[n]);
+      return v;
+    });
+    return this._wn;
+  }
+
   // ---------- calibration ----------
 
   // Runs a corpus through the model in chunks (each its own sequence; position 0, the attention sink, is skipped) and
@@ -386,9 +405,8 @@ function insertTop(arr, i, item, keep, cmp) {
 }
 
 export function topk(arr, k, tok) {
-  const idx = [...Array(arr.length).keys()];
   const hi = partialTop(arr, k, 1), lo = partialTop(arr, k, -1);
-  return { up: hi.map(i => tok.piece(i)), down: lo.map(i => tok.piece(i)), upIds: hi, downIds: lo, _n: idx.length };
+  return { up: hi.map(i => tok.piece(i)), down: lo.map(i => tok.piece(i)), upIds: hi, downIds: lo };
 }
 
 function partialTop(arr, k, sign) {
