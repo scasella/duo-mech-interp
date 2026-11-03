@@ -16,7 +16,8 @@ image = (modal.Image.debian_slim(python_version="3.12")
                       "networkx", "safetensors")
          .env({"HF_HOME": "/data/hf"})
          .add_local_file(os.path.join(HERE, "core.py"), "/root/core.py")
-         .add_local_file(os.path.join(HERE, "analyze.py"), "/root/analyze.py"))
+         .add_local_file(os.path.join(HERE, "analyze.py"), "/root/analyze.py")
+         .add_local_file(os.path.join(HERE, "bsf.py"), "/root/bsf.py"))
 
 
 @app.function(image=image, gpu=GPU, volumes={"/data": vol}, memory=65536, timeout=8 * 3600)
@@ -52,6 +53,32 @@ def words(run: str = "words", layers: str = "6,12,18", tokens: int = 30_000_000,
           min_count: int = 20, model: str = "Qwen/Qwen3.5-2B-Base"):
     """Average residual per vocabulary word (no SAE): modal run tools/shapes/modal_app.py::words"""
     print(centroids.remote(run, [int(x) for x in layers.split(",")], tokens, seq, batch, min_count, model))
+    print(f"done. fetch with: modal volume get qwen-scope-shapes runs/{run} ./runs/{run}")
+
+
+@app.function(image=image, gpu=GPU, volumes={"/data": vol}, memory=65536, timeout=8 * 3600)
+def featurize(run: str, model: str, layer: int, n_tokens: int, configs: dict, encode_tokens: int, seq_len: int, batch: int):
+    import torch, core, bsf
+    torch.backends.cuda.matmul.allow_tf32 = True
+    out = f"/data/runs/{run}"
+    tok, lm = core.load_model("cuda", torch.bfloat16, layer, path=model, cache_dir="/data/hf")
+    batches = core.corpus_batches(tok, seq_len, batch)
+    models, (mu, scale), it = bsf.train_online(tok, lm, layer, batches, n_tokens, {k: tuple(v) for k, v in configs.items()},
+                                               out, "cuda", log=lambda s: print(s, flush=True))
+    vol.commit()
+    norm = lambda x: (x - mu.cuda()) * scale
+    for name in configs:
+        if configs[name][1] > 1:
+            bsf.encode_corpus(tok, lm, layer, it, models[name], norm, encode_tokens, out, name, "cuda", log=lambda s: print(s, flush=True))
+    vol.commit()
+
+
+@app.local_entrypoint()
+def blocks(run: str = "bsf08", model: str = "Qwen/Qwen3.5-0.8B", layer: int = 12, tokens: int = 60_000_000,
+           encode: int = 2_000_000, seq: int = 512, batch: int = 32):
+    """Block-sparse featurizer (blocks of 3) and a TopK-SAE baseline on one layer: modal run tools/shapes/modal_app.py::blocks"""
+    configs = {"bsf3": [8192, 3, 32], "sae": [24576, 1, 96]}
+    featurize.remote(run, model, layer, tokens, configs, encode, seq, batch)
     print(f"done. fetch with: modal volume get qwen-scope-shapes runs/{run} ./runs/{run}")
 
 
