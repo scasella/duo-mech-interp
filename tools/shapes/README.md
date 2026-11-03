@@ -22,6 +22,8 @@ has no SAE.
 | `sweep_summary.py` | Combines two models' sweeps into one verdict per family |
 | `sweep_shared.py` | Do ordered families share their order direction (within groups, across groups)? |
 | `sweep_transfer.py` | Causal version: push along a direction built from other families, read the target family |
+| `ordinal_shared.py` | Round four: the isolated-word protocol of arXiv 2606.01269 with a null, and a power analysis |
+| `metaphor_steer.py` | Round four: metaphor steering with held-out words, specificity ranks and evaluation removed |
 
 ## Running
 
@@ -127,12 +129,15 @@ scale while the model judges another domain, against random word-pair contrasts.
 - It holds 13–15% of the scales' variance at layers 6 and 12; random axes give 10–13%.
 - "More is up", "rich is powerful", "important is big" and "loud is big" vanish once it is removed.
 
-**Happy is bright:**
+**Happy is bright** (weakened in round four):
 - The axes align at every layer in both models.
 - Pushing dark→bright moves 0.8B toward happy words (z 4.5 at 1×). It does nothing to moral words (z −0.5).
+- Round four: most of this came from words with a mood sense ("gloomy", "radiant"). Without them it is z 1.9–2.3 in
+  both models, below the multiple-comparison bar.
 
-**Moral is clean:**
+**Moral is clean** (double meanings, round four):
 - The alignment holds with held-out word lists.
+- Round four: the push vanishes once "dirty" and "filthy", which have moral senses, are replaced (z −1.0 to 0.9).
 - Clean→moral is causal (z 3.6), but so are smart→moral (3.9) and healthy→moral (2.2). This is a broad "good
   qualities" direction, not a specific metaphor.
 
@@ -170,6 +175,8 @@ scale while the model judges another domain, against random word-pair contrasts.
 - No cross-domain pair beats the multiple-comparison bar on its own. The coherent candidate, north–south ~ up–down
   and ascending–descending, is causal in 0.8B (`cross_steer.py`): south→north raises "up" words, z 4.0 with valence
   removed; slow→fast does nothing.
+- Round four: the robust direction is the reverse. Up → north passes every control in both models; north → up is
+  weaker and not specific.
 
 **Block-sparse featurizer** (`bsf.py`, `modal_app.py::blocks`, `bsf_analyze.py`; 0.8B layer 12, 60M tokens of
 FineWeb-Edu):
@@ -309,3 +316,85 @@ word-frequency direction removed; layer 12, 0.8B / 2B):
 - The effects are modest. A borrowed direction moves a family typically less than half as far as its own direction
   does, for example 0.6 vs 2.7 values for geographic scale. The pooled z treats families as independent, so read it
   as a summary, not a strict test.
+
+## Round four: a shared ordinal direction, and metaphors with clean word lists
+
+### Is there a domain-general ordinal direction?
+
+arXiv 2606.01269 ("Emergent Ordinal Geometry in Transformers Trained on Local Comparisons") reports for Qwen2.5-1.5B:
+- the per-domain probe directions for digits, months and size adjectives are "nearly orthogonal at every layer
+  (|cos| < 0.2 throughout)";
+- so the model "does not appear to encode a single, domain-general ordinality direction".
+
+That test has no null distribution. In 1,536 dimensions a real shared component of cosine 0.03 sits far below 0.2.
+`ordinal_shared.py` checks both protocols.
+
+```sh
+python tools/shapes/ordinal_shared.py isolated Qwen/Qwen2.5-1.5B iso.json          # their protocol, with a null
+python tools/shapes/family_sweep.py Qwen/Qwen2.5-1.5B runs/sweepq25 7,14,21 --no-steer
+python tools/shapes/ordinal_shared.py power runs/sweep_summary.json power.json runs/sweepq25:14:Qwen2.5
+python tools/shapes/sweep_shared.py runs/sweepq25 runs/sweepq25 runs/sweep_summary.json shared.json 14
+```
+
+**Their protocol on their model** (each word tokenized on its own, sub-tokens averaged, every layer):
+- With a ridge probe like theirs, the largest pairwise |cos| is 0.21. Their observation reproduces.
+- The three pairs average a cosine of 0.02–0.05, positive at every layer. It beats shuffled ranks (p < 0.05) at 16
+  of 28 layers. In Qwen3.5-0.8B it does so at 11–13 of 24 layers.
+- Raw covariance directions of isolated words all point the same way (cosine 0.96–1.0 at layers 1–25), and so do
+  shuffled ones. A word on its own sits at the first position, whose few huge activations swamp the rest. Reading
+  words in context avoids this.
+
+**In context** (our template sentences, 26 ordered families, 238 pairs from different groups, frequency removed):
+
+| model | mean cosine | z | the paper's three domains, mean (p) | random three-family tests that detect it |
+|---|---|---|---|---|
+| Qwen3.5-0.8B, layer 12 | 0.047 | 8.7 | 0.21 (0.002) | 12% |
+| Qwen3.5-2B, layer 12 | 0.034 | 7.5 | 0.20 (0.004) | 12% |
+| Qwen2.5-1.5B, layer 7 / 14 / 21 | 0.026 / 0.033 / 0.019 | 6.2 / 6.7 / 4.0 | 0.14 (0.02) / 0.14 (0.03) / 0.10 (0.09) | 8% / 10% / 4% |
+
+- Within their three domains, number words and months share strongly (cosine 0.26–0.36 in all three models), while
+  sizes share little (0.0–0.17).
+- The group structure replicates in Qwen2.5-1.5B (layer 14), beyond the general direction:
+  - magnitude: p 0.002 (new families only: 0.015);
+  - letter sequences: p 0.006;
+  - social ranks: p 0.025;
+  - age and time: nothing.
+
+**Reading.** Both results hold. Most of each family's order direction is its own, at an average cosine of about 0.03.
+A small shared part exists in all three models, and only pooling reveals it: a test on three random families finds it
+4–12% of the time. "No single domain-general direction" overstates their evidence; "no strong one" is right.
+
+### Metaphors, version 2
+
+`metaphor_steer.py` reruns the causal test with these changes:
+- held-out source words with no sense in the target domain (no "gloomy" or "radiant" for brightness, no "dirty" or
+  "filthy" for cleanliness);
+- held-out prompts and readout words;
+- one push size for every source, so each hypothesised source is ranked against 29 others;
+- a condition with a whole set of good/bad directions removed;
+- both directions of each pair, 64 random word-set contrasts as the null, and the bar at z 2.58 (Bonferroni over 10
+  pairs).
+
+Run on Modal (`modal_app.py::job`) for Qwen3.5-0.8B and 2B, at layer 12.
+
+| pair (push → read) | original words | everything held out | evaluation also removed | rank of 29 | both models |
+|---|---|---|---|---|---|
+| **up → north** | z 4.8 / 6.5 | 4.8 / 5.0 | 4.5 / 4.3 | 1st in 3 of 4, 2nd in the other | **yes** |
+| north → up | 3.5 / 3.1 | — (no clean word list) | 3.2 / 3.0 | 2nd–7th | weak, not specific |
+| bright → happy | 4.6 / 4.6 | 2.2 / 1.9 | 2.3 / 2.3 | 1st–2nd | below the bar |
+| happy → bright | 6.1 / 8.4 | 2.3 / 0.8 (held-out readout) | 2.3 / 1.1 | 1st / 9th | no |
+| clean → moral | 3.7 / 2.7 | 0.0 / 0.9 | 0.0 / 0.1 | 1st–5th | no (double meanings) |
+| bright → smart | 1.9 / 1.9 | 0.4 / 0.7 | −0.1 / 0.0 | 3rd–5th | no (double meanings) |
+| big → important | 2.0 / 1.9 | 2.6 / 2.7 (held-out prompts) | 2.9 / 3.4 | 4th–8th | present, not specific |
+| up → happy | 0.4 / 0.3 | 0.0 / 0.0 | −0.7 / −0.1 | 13th–16th | no |
+| warm → friendly | −0.9 / −1.7 | 0.1 / 0.4 | −0.4 / 0.0 | 9th–28th | no |
+
+(0.8B / 2B. "Everything held out" uses held-out source words with held-out prompts and readouts, where they exist.)
+
+- **Up → north** is the one robust cross-domain mapping. It survives every control in both models and runs one way:
+  pushing "up" makes "north" likelier, while north → up is weak and loudness and temperature push "up" harder.
+- **Collocation caveat:** English says "up north" and "down south". This test can't separate a mapping between
+  concepts from the model having learned those phrases, which may themselves trace back to maps drawn with north up.
+- **Happy is bright** shrinks to about half once no word has a mood sense. It stays positive in both models but under
+  the bar.
+- **Moral is clean** and **smart is bright** were double meanings ("dirty tricks", "a bright student").

@@ -399,7 +399,8 @@ def main():
     os.makedirs(out, exist_ok=True)
     from wordfreq import zipf_frequency
     tok = AutoTokenizer.from_pretrained(model_dir, cache_dir=cache)
-    m = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.float32, cache_dir=cache).eval()
+    dev = os.environ.get("DEVICE", "cpu")
+    m = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.float32, cache_dir=cache).eval().to(dev)
     lm = m.model.language_model if hasattr(m.model, "language_model") else m.model
     U = m.get_output_embeddings().weight.detach()
     cap, st = {}, dict(delta=None, pos=None, layer=None)
@@ -436,9 +437,9 @@ def main():
             by_len = {}
             for vi, (ids, p) in enumerate(loc): by_len.setdefault(len(ids), []).append((vi, ids, p))
             for rows in by_len.values():
-                with torch.inference_mode(): lm(input_ids=torch.tensor([r[1] for r in rows]), use_cache=False)
+                with torch.inference_mode(): lm(input_ids=torch.tensor([r[1] for r in rows], device=dev), use_cache=False)
                 for L in LAYERS:
-                    for j, (vi, _, p) in enumerate(rows): R[L][ti, vi] = cap[L][j, p].float().numpy()
+                    for j, (vi, _, p) in enumerate(rows): R[L][ti, vi] = cap[L][j, p].float().cpu().numpy()
         freq = np.array([zipf_frequency(v.lower() if v.isupper() and len(v) > 2 else v, "en") for v in vals])
         ntok = [len(enc(" " + v)) for v in vals]
         orders = {"main": np.arange(V)}
@@ -468,11 +469,11 @@ def main():
                     st["pos"], st["layer"] = p, L
                     for kind, D in (("chord", np.stack([a * (mu[t_i] - mu[s_i]) for a in ALPHAS])),
                                     ("node", np.stack([mu[v] - mu[s_i] for v in range(V)]))):
-                        st["delta"] = torch.tensor(D, dtype=torch.float32)
+                        st["delta"] = torch.tensor(D, dtype=torch.float32, device=dev)
                         with torch.inference_mode():
-                            h = lm(input_ids=torch.tensor([ids] * len(D)), use_cache=False).last_hidden_state[:, -1]
+                            h = lm(input_ids=torch.tensor([ids] * len(D), device=dev), use_cache=False).last_hidden_state[:, -1]
                         st["delta"] = None
-                        q = torch.softmax(h @ U.T, -1)[:, first].numpy()
+                        q = torch.softmax(h @ U.T, -1)[:, first].cpu().numpy()
                         rec = dict(start=vals[s_i], idx=q.argmax(1).tolist(), mass=q.sum(1).round(3).tolist(), q=q / q.sum(1, keepdims=True))
                         (walks if kind == "chord" else nodes).append(rec)
                 if len(walks) == 2:

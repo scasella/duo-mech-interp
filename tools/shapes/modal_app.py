@@ -149,3 +149,45 @@ def scales(run: str, out: str, layers: str = "6,12", strengths: str = "0.6,0.8,1
     print(stdout)
     if res is None: print(stderr)
     else: open(out, "w").write(res)
+
+
+# Any script in tools/shapes on a GPU: the local files are sent with the call (no image rebuild when they change), the
+# volume is at /data (word-average runs live in /data/runs/...), and the listed outputs come back.
+#   modal run tools/shapes/modal_app.py::job --cmd "python metaphor_steer.py Qwen/Qwen3.5-0.8B /data/runs/words08 out.json" \
+#       --outputs out.json --out runs/metaphor08
+work_image = (modal.Image.debian_slim(python_version="3.12")
+              .pip_install("torch==2.15.0", "transformers==5.22.1", "numpy", "scipy", "wordfreq", "huggingface_hub",
+                           "safetensors", "datasets")
+              .env({"HF_HOME": "/data/hf"}))
+
+
+@app.function(image=work_image, gpu=os.environ.get("JOB_GPU", "A10G"), volumes={"/data": vol}, timeout=4 * 3600)
+def run_job(files: dict, cmd: list, outputs: list, env: dict):
+    import subprocess
+    work = "/root/work"
+    for path, data in files.items():
+        full = os.path.join(work, path); os.makedirs(os.path.dirname(full), exist_ok=True)
+        open(full, "wb").write(data)
+    r = subprocess.run(cmd, cwd=work, env=dict(os.environ, **env), capture_output=True, text=True)
+    vol.commit()
+    got = {}
+    for o in outputs:
+        full = os.path.join(work, o)
+        if os.path.isdir(full):
+            for f in os.listdir(full): got[os.path.join(o, f)] = open(os.path.join(full, f), "rb").read()
+        elif os.path.exists(full): got[o] = open(full, "rb").read()
+    return r.returncode, r.stdout, r.stderr[-6000:], got
+
+
+@app.local_entrypoint()
+def job(cmd: str, outputs: str = "", out: str = "runs/job", env: str = ""):
+    import shlex
+    files = {f: open(os.path.join(HERE, f), "rb").read() for f in os.listdir(HERE) if f.endswith(".py")}
+    envd = dict(kv.split("=", 1) for kv in env.split(",") if kv)
+    code, stdout, stderr, got = run_job.remote(files, shlex.split(cmd), [o for o in outputs.split(",") if o], envd)
+    print(stdout)
+    if code: print(stderr)
+    os.makedirs(out, exist_ok=True)
+    for name, data in got.items():
+        p = os.path.join(out, name); os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "wb").write(data)
+    print(f"exit {code}; {len(got)} output file(s) in {out}")
