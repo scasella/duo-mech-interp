@@ -8,7 +8,8 @@ import json, os, sys
 import numpy as np, torch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core
-from axis_atlas import SCALES
+from axis_atlas import SCALES as _SCALES
+SCALES = dict(_SCALES, **{"north-south": ("south southern southeast southwest southeastern", "north northern northeast northwest northeastern")})
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 model_dir, run, cache, out = sys.argv[1:5]
@@ -30,6 +31,9 @@ TESTS = {   # target domain: prompts, low readout words, high readout words
     "seriousness": (["The tone of the meeting was", "The judge's expression was", "Her speech at the ceremony was", "The atmosphere at the party was",
                      "His voice became", "The style of the email was", "The documentary was", "The comedian's act was"],
                     "playful silly casual humorous informal funny", "serious grave solemn stern formal strict"),
+    "vertical": (["The elevator was going", "She looked", "The balloon floated", "The bird flew", "He climbed the stairs, going",
+                  "The road sloped", "The sun was coming", "The children ran"],
+                 "down downward downwards below beneath", "up upward upwards above overhead"),
     "friendliness": (["The new neighbours were very", "The shopkeeper was", "When I asked for help, the receptionist was", "The dog seemed",
                       "The way he spoke to the waiter was", "Our tour guide was", "The locals were", "Her reply to my message was"],
                      "hostile rude cruel nasty harsh", "friendly kind gentle nice caring"),

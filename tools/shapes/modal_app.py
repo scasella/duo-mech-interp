@@ -82,6 +82,24 @@ def blocks(run: str = "bsf08", model: str = "Qwen/Qwen3.5-0.8B", layer: int = 12
     print(f"done. fetch with: modal volume get qwen-scope-shapes runs/{run} ./runs/{run}")
 
 
+@app.function(image=image, gpu=GPU, volumes={"/data": vol}, memory=65536, timeout=2 * 3600)
+def encode_only(run: str, model: str, name: str, n_tokens: int, seq_len: int = 512, batch: int = 32):
+    """Codes of an already-trained featurizer on fresh text (same text stream as the training run's encode pass)."""
+    import torch, core, bsf
+    ck = torch.load(f"/data/runs/{run}/{name}.pt", map_location="cuda", weights_only=False)
+    m = bsf.GrassmannianBSF(len(ck["mu"]), *ck["config"]).cuda(); m.load_state_dict(ck["state"]); m.eval()
+    tok, lm = core.load_model("cuda", torch.bfloat16, ck["layer"], path=model, cache_dir="/data/hf")
+    it = iter(core.corpus_batches(tok, seq_len, batch))
+    norm = lambda x: (x - ck["mu"].cuda()) * ck["scale"]
+    bsf.encode_corpus(tok, lm, ck["layer"], it, m, norm, n_tokens, f"/data/runs/{run}", name, "cuda", log=lambda s: print(s, flush=True))
+    vol.commit()
+
+
+@app.local_entrypoint()
+def encode(run: str = "bsf08", model: str = "Qwen/Qwen3.5-0.8B", name: str = "sae", tokens: int = 2_000_000):
+    encode_only.remote(run, model, name, tokens)
+
+
 @app.function(image=image, cpu=8, memory=98304, volumes={"/data": vol}, timeout=6 * 3600)
 def analyze(run: str, layers: list):
     import analyze as A
