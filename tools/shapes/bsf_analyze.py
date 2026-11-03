@@ -110,7 +110,13 @@ for pdir in probe_dirs:
                   f"covers {b['coverage']:.0%}, in-block order {otxt} (p {b['order_p']:.2f}), overlap {b['overlap']:.2f} | {stxt}")
 
 # --- discovery: blocks concentrated on few word types, with structured in-block geometry
-print("\nblocks whose firings concentrate on a handful of words, laid out over 2-3 dimensions:")
+STOP = set("the and for are but not you all any can had her was one our out has him his how its may new now old see two who did get let say she too use that with have this from they will would there their what about which when make like time just know take into year your some could them than then look only come over also back after work first well even want because these give most".split())
+_dec = {}
+def is_content(t):
+    if t not in _dec: _dec[t] = tok.decode([int(t)]).strip()
+    w = _dec[t]
+    return len(w) >= 3 and w.isalpha() and w.lower() not in STOP
+print("\nblocks whose firings concentrate on a handful of content words (no function words or punctuation):")
 cands = []
 flat_top = top.reshape(-1); flat_tok = np.repeat(toks, bsf.k); flat_c = coords.reshape(-1, bsf.b)
 order = np.argsort(flat_top, kind="stable"); starts = np.searchsorted(flat_top[order], np.arange(bsf.G + 1))
@@ -118,10 +124,10 @@ for g in range(bsf.G):
     if fires[g] < 300: continue
     sel = order[starts[g]:starts[g + 1]]
     wt = Counter(flat_tok[sel].tolist())
-    words = [(w, c) for w, c in wt.most_common(12) if c >= 15]
+    words = [(w, c) for w, c in wt.most_common(60) if c >= 15 and is_content(w)][:12]
     if len(words) < 5: continue
     share = sum(c for _, c in words) / len(sel)
-    if share < 0.5: continue
+    if share < 0.4: continue
     cents = np.stack([flat_c[sel][flat_tok[sel] == w].mean(0) for w, _ in words])
     _, _, evf = pca(cents, 3)
     labels = [tok.decode([w]).strip() for w, _ in words]
