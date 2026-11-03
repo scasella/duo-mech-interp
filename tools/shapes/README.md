@@ -15,6 +15,9 @@ has no SAE.
 | `modal_app.py` | GPU runs on Modal: `main` (probes + SAE harvest + analysis) and `::words` (per-word averages, any checkpoint) |
 | `analyze.py` | `probes` (known families), `groups` (SAE-feature grouping), `words` (word families and their shapes) |
 | `ordered_tests.py` | Do the found families line up with a real quantity (durations, volumes, intensity, digits, luck)? And a city map |
+| `interview_checks.py` | The periodic table and the emotion wheel (valence × arousal) in the word averages |
+| `manifold_steer.py` | Steering along a shape (through the real values) versus a straight push, on 0.8B |
+| `overshoot.py` | How far a straight push goes before the model stops answering in kind, versus following the shape |
 
 ## Running
 
@@ -75,3 +78,31 @@ list is nearest to value *i* of another.
 | Digits 0–9 | 0.62 (0.84 at layer 6) |
 | Luck adverbs (fortunately vs unfortunately) | 0.77 |
 | City map (held-out linear readout) | latitude r 0.60, longitude r 0.82 (shuffled baseline about 0.15) |
+
+## Steering along the shape (0.8B, the app's model)
+
+At the family word ("Today is Monday. Tomorrow is"), the internal state was moved from Monday toward Friday along two
+paths: a straight line, or a path through the real Tuesday–Thursday averages that then continues round the week.
+
+**In between source and target** (share of right answers, layers 6/9/12):
+
+| Family | Through the real values | Straight line |
+|---|---|---|
+| Weekdays | 86–100% | 0–5% |
+| Months | 95–100% | 0% |
+| Units of time | 67–73% | 0% |
+
+**Past the target:**
+- Through the real values: 89–100% for weekdays and months, 10–30% for units of time.
+- Straight line: 0–4%. It stops moving, then breaks from about 4× its length. Day-word probability falls from 0.85 to
+  0.34 at 12×, and the top answer is a day only 14% of the time.
+- Following the days 48 steps round the week still gives the right "tomorrow" every time.
+
+**Moves confined to the circle's 2-D plane** change the answer only 0–19% of the time. The steerable shape is the
+curve through the real averages in the full 1,024 dimensions.
+
+**Also in the word averages** (`interview_checks.py`):
+- Element names give atomic number (held-out r 0.61–0.86 in 2B, 0.64–0.71 in 0.8B) and period. Shuffled labels score
+  about 0.25.
+- Emotion words give valence and arousal. A held-out readout gets the sign right 89–96% of the time (shuffled about 60%).
+  But these are not the top two axes among emotion words, so the wheel is a hidden plane, not the main shape.
