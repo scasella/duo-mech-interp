@@ -1,7 +1,8 @@
 # Causal test of a cross-domain alignment: push along one scale's axis (e.g. dirty -> clean, with the good-bad axis
 # removed) while the model judges something in another domain ("Lying to protect yourself is ..."), and measure the shift
 # in the next word between that domain's poles (log P(high words) - log P(low words)), against random pushes of the
-# same size, the good-bad axis itself, and the target scale's own axis (an upper bound).
+# same size (contrasts between random word sets with the good-bad axis removed; NULL=gauss for random directions),
+# the good-bad axis itself, and the target scale's own axis (an upper bound).
 #   python tools/shapes/cross_steer.py <model dir> <words run dir> <HF cache or ""> <out.json> [layer] [src>tgt,...]
 import json, os, sys
 import numpy as np, torch
@@ -37,7 +38,7 @@ PAIRS = [("cleanliness", "morality"), ("morality", "cleanliness"), ("brightness"
          ("temperature", "friendliness")]
 if len(sys.argv) > 6: PAIRS = [tuple(x.split(">")) for x in sys.argv[6].split(",")]
 ALPHAS = [1.0, 2.0, 4.0]
-N_RAND = 24
+N_RAND = int(os.environ.get("N_RAND", 32))
 
 tok = AutoTokenizer.from_pretrained(model_dir)
 m = AutoModelForCausalLM.from_pretrained(model_dir, dtype=torch.float32).eval()
@@ -83,7 +84,10 @@ for src, tgt in PAIRS:
     d_src = diff(src); scale = float(np.linalg.norm(d_src))            # push size: the source scale's own pole gap
     axes = {"source (valence removed)": unit(no_val(d_src)), "source": unit(d_src), "valence": val,
             "target (upper bound)": unit(diff(tgt))}
-    rand = [unit(rng.normal(size=M.shape[1]).astype(np.float32)) for _ in range(N_RAND)]
+    if os.environ.get("NULL", "words") == "words":                     # random word-pair contrasts, valence removed
+        rand = [unit(no_val((M[rng.choice(pool, 5)] - gm).mean(0) - (M[rng.choice(pool, 5)] - gm).mean(0))) for _ in range(N_RAND)]
+    else:                                                              # random directions in the model's space
+        rand = [unit(rng.normal(size=M.shape[1]).astype(np.float32)) for _ in range(N_RAND)]
     names = list(axes) + [f"random{i}" for i in range(N_RAND)]
     vecs = list(axes.values()) + rand
     shifts = {n: {a: [] for a in ALPHAS} for n in names}
