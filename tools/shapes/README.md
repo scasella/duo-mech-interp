@@ -106,3 +106,37 @@ curve through the real averages in the full 1,024 dimensions.
   about 0.25.
 - Emotion words give valence and arousal. A held-out readout gets the sign right 89–96% of the time (shuffled about 60%).
   But these are not the top two axes among emotion words, so the wheel is a hidden plane, not the main shape.
+
+## New-structure search: axes reused across domains (0.8B and 2B)
+
+`discover.py` (label-free ordering of word families) mostly finds synonym chains and verb-form loops. A few candidate
+scales are not yet validated: how soon (future → imminent → brink), outbreak size (outbreak → epidemic → pandemic),
+speed, and togetherness.
+
+`axis_atlas.py` builds 30 scales from opposite word sets and tests whether their axes are shared. It uses cosine
+z-scores against random word axes, with valence and word frequency removed (an AUC version saturates with this few
+words and was dropped). `atlas_validate.py` re-tests with held-out word lists. `cross_steer.py` pushes along one
+scale while the model judges another domain, against random word-pair contrasts.
+
+**Shared "more" axis:**
+- Power, size, quantity, importance, wealth, loudness and cost share a weak common axis.
+- It holds 13–15% of the scales' variance at layers 6 and 12; random axes give 10–13%.
+- "More is up", "rich is powerful", "important is big" and "loud is big" vanish once it is removed.
+
+**Happy is bright:**
+- The axes align at every layer in both models.
+- Pushing dark→bright moves 0.8B toward happy words (z 4.5 at 1×). It does nothing to moral words (z −0.5).
+
+**Moral is clean:**
+- The alignment holds with held-out word lists.
+- Clean→moral is causal (z 3.6), but so are smart→moral (3.9) and healthy→moral (2.2). This is a broad "good
+  qualities" direction, not a specific metaphor.
+
+**Rigid → serious:**
+- Strong (z 4.7), likely shared meaning (rigid, stiff and firm also mean strict).
+- Quiet→serious and slow→serious are borderline (|z| about 2). Heavy→serious and big→serious are not significant.
+
+**Not found:**
+- Affection is warmth (warm→friendly z −1.1; axes unaligned).
+- Serious or important is heavy.
+- Time is distance.
