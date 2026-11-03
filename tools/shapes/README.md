@@ -18,6 +18,10 @@ has no SAE.
 | `interview_checks.py` | The periodic table and the emotion wheel (valence × arousal) in the word averages |
 | `manifold_steer.py` | Steering along a shape (through the real values) versus a straight push, on 0.8B |
 | `overshoot.py` | How far a straight push goes before the model stops answering in kind, versus following the shape |
+| `family_sweep.py` | Round three: 56 ordered/cyclic word families plus 7 known controls; order, bend, node check and straight push |
+| `sweep_summary.py` | Combines two models' sweeps into one verdict per family |
+| `sweep_shared.py` | Do ordered families share their order direction (within groups, across groups)? |
+| `sweep_transfer.py` | Causal version: push along a direction built from other families, read the target family |
 
 ## Running
 
@@ -147,12 +151,15 @@ scale while the model judges another domain, against random word-pair contrasts.
 
 | Scale | 0.8B (layers 6, 12) | 2B (layers 6, 12, 18) | Straight push |
 |---|---|---|---|
-| How soon (someday → eventually → later → soon → shortly → immediately → now) | 1.00, 0.96 | 0.96, 0.96, 0.86 | skips all 5 middle words |
+| How soon (someday → eventually → later → soon → shortly → immediately → now) | 1.00, 0.96 | 0.96, 0.96, 0.86 | skips all 5 middle words* |
 | Outbreak size (case → cluster → outbreak → epidemic → pandemic) | 0.90 | 0.90–1.00 | inconclusive |
 | Speed | 0.93 at layer 12 | 0.54–0.86 | skips most of the middle |
 | Togetherness | not clearly ordered | not clearly ordered | inconclusive |
 
-- For how soon, the path through the real words walks through all seven. It is a new curved, ordered scale.
+- How soon is a new ordered scale. The path through the real words walks through all seven.
+- \*Correction (round three): a straight push skips the middle words for nearly every family, including number
+  words and months, so skipping is not evidence that a scale is curved. The bend test finds no reliable bend in how
+  soon (1 of 4 tests). Treat it as ordered, shape unknown.
 - Outbreak size and togetherness are inconclusive on the straight-push test because the copy prompt can't produce their
   middle words.
 
@@ -174,3 +181,118 @@ FineWeb-Edu):
   - two size blocks put small against large (rank correlation 0.81 and 0.82);
   - a commonness block puts rare against common (0.60);
   - a good/bad block's first axis is degree (better/best vs good), not polarity.
+
+## Round three: a targeted sweep of 56 word families nobody had checked
+
+`family_sweep.py` tests 56 families whose order is known from the world, not from the model:
+- ranks: military, church, nobility, corporate, academic, chess, cards, status tiers, credit ratings;
+- school and life: school year, grade, school level, degree, life stage, generation, decade of life, relationship,
+  closeness, grief, insect stage;
+- sizes: clothing, coffee, coins, settlement, geographic scale, water body, rock, ensemble, taxonomy, quantifiers,
+  wealth;
+- nature: wind, precipitation, state of matter, moon phase, brightness;
+- time: meals, historical era, schedule, tournament round, project stage, sleep;
+- degree: frequency, probability, hunger, anger, quality;
+- music: tempo, dynamics, karate belts;
+- rote sequences: Greek letters, NATO alphabet;
+- cycles: zodiac, Chinese zodiac, solfège, musical notes (scale order and circle of fifths).
+
+Each family has 8 template sentences and a copy prompt. Words of several tokens are read at their last token. Seven
+families with known shapes run alongside as controls. Both models are tested (0.8B, 2B-Base), at layers 6 and 12.
+
+```sh
+python tools/shapes/family_sweep.py <0.8B dir> runs/sweep08 6,12
+python tools/shapes/family_sweep.py Qwen/Qwen3.5-2B-Base runs/sweep2b 6,12 --cache <HF cache>
+python tools/shapes/sweep_summary.py runs/sweep08/family_sweep.json runs/sweep2b/family_sweep.json runs/sweep_summary.json
+python tools/shapes/sweep_shared.py runs/sweep08 runs/sweep2b runs/sweep_summary.json runs/sweep_shared.json 12
+python tools/shapes/sweep_transfer.py <0.8B dir> runs/sweep08 runs/sweep_summary.json runs/sweep_transfer08.json 12
+```
+
+The order test is the round-two test: rank correlation along the top principal axis, or neighbours that stay adjacent
+on the top plane for cycles, with a permutation p. A family counts as ordered at p < 0.05 at some layer in both
+models. By chance about 0.5 of 56 families would pass. Word frequency (Zipf, from `wordfreq`) is partialled out as a
+check. With 4 values the smallest possible p is 0.083, so 4-value families can only be reported as consistent.
+
+**Ordered in both models (14 new families)**. Rank correlation at the best layer, 0.8B / 2B:
+
+| Family | Values | 0.8B | 2B |
+|---|---|---|---|
+| Wind | calm → breeze → wind → gale → storm → hurricane | 1.00 | 1.00 |
+| Settlement | hamlet → village → town → city → metropolis | 1.00 | 1.00 |
+| Water body | puddle → pond → lake → sea → ocean | 1.00 | 1.00 |
+| Geographic scale | street → neighborhood → city → county → state → country → continent | 0.96 | 1.00 |
+| Letter grade | A → B → C → D → F | 1.00 | 1.00 |
+| School level | preschool → kindergarten → elementary → college → graduate | 1.00 | 1.00 |
+| Corporate rank | intern → assistant → manager → director → CEO | 1.00 | 1.00 |
+| Decade of life | teens → twenties → … → eighties | 1.00 | 1.00 |
+| Schedule | hourly → daily → weekly → monthly → quarterly → annually | 0.94 | 1.00 |
+| Nobility | baron → viscount → earl → marquis → duke → prince → king → emperor | 0.98 | 0.86 |
+| Closeness | stranger → acquaintance → colleague → friend → partner → spouse | 0.94 | 0.94 |
+| Life stage | infant → baby → toddler → child → teenager → adult → senior | 0.89 | 0.96 |
+| Taxonomy rank | species → genus → family → order → class → phylum → kingdom | 0.86 | 0.93 |
+| Greek letters | alpha → beta → … → theta | 0.88 | 0.83 |
+
+- Word frequency does not explain them. The order survives partialling out frequency, with partial correlations
+  ≥ 0.54; the lowest are Greek letters (0.54) and nobility (0.66) in 2B. School level's order tracks frequency
+  closely (0.9), so there it can't be fully separated.
+- Perfectly ordered at every layer of both models, but with only 4 values: school year, state of matter, coffee size.
+  Coffee size also tracks word frequency.
+- Ordered on the second axis in both models: military rank (0.90 / 0.86) and clothing size (0.94 / 1.00). The test
+  allows for picking the best of three axes. Their top axis is something else.
+- Ordered in one model only: NATO alphabet, academic rank, church rank, status tier, ensemble, frequency adverbs,
+  quality, zodiac, Chinese zodiac, musical notes.
+- Not ordered: chess pieces by value, card ranks, coins by value, credit ratings, grief stages, project stages, moon
+  phases, tempo, karate belts, relationship stages, quantifiers, probability, hunger, anger, meals, precipitation,
+  historical era, solfège.
+- Inconclusive, 4 values and not perfectly ordered: brightness, degree, dynamics, generation, insect stage, rock size,
+  sleep, tournament round, wealth.
+
+**Cycles are mostly absent.**
+- No circle for the Chinese zodiac: 0–2 of 12 neighbours kept in 0.8B, and 5 of 12 at one layer of 2B (p 0.05).
+  None for solfège either (0–2 of 7).
+- The Western zodiac keeps 4–6 of 12 neighbours (p 0.01–0.16), not a clean circle.
+- Musical notes keep 5 of 7 neighbours in scale order in 0.8B only. Nothing follows the circle of fifths (1–2 of 7).
+- So the model learns circles for weekdays and months, which text repeats constantly, but not for conventional cycles
+  it reads about less often.
+
+**A straight push is not a curvature test.**
+- The node check works for most families: placing the residual at a middle word's average makes the copy prompt
+  repeat that word.
+- But a straight push from the first word's average to the last skips the middle words almost everywhere, known
+  lines included. At the best point on the push, middle words get a median of 1–9% of the share they get at their own
+  average, for number words, months, how soon and speed (temperature and size 22%). Weekdays are the exception
+  (65%).
+- Middle words are not blends of the end words. Each has its own direction, and the order lives in a few shared
+  axes.
+- The readout-free test is the bend: does a second or third axis curve as a quadratic of the order (permutation p)?
+  - It bends in all 4 tests for geographic scale, closeness and frequency adverbs, and in 3 of 4 for settlement and
+    decade of life.
+  - Frequency adverbs are not a clean line on the top axis. Instead a second axis puts the two absolutes, never and
+    always, on one side and sometimes on the other.
+
+**Shared directions** (`sweep_shared.py`; order direction = covariance of the value averages with rank; a pooled
+word-frequency direction removed; layer 12, 0.8B / 2B):
+- **A general "later in the sequence" direction.** The order directions of all ordered families point slightly the
+  same way, across unrelated groups: mean cosine 0.044 / 0.031, z 8.1 / 6.6 against shuffled ranks. It replicates
+  at layer 6. This extends the shared position code (weekdays, months, numbers, ordinals) to ranks, sizes and
+  alphabets.
+- **Magnitude families share more than that.** Settlement, geographic scale, water body, wind, the size scales and
+  number words: excess over the general direction p 0.001 / 0.004. With only the new families it is p 0.02 / 0.03.
+  This is the round-one "more" axis again, now reaching nouns for places, water and weather.
+- **Social ranks share a little more** (excess p 0.09 / 0.035; layer 6: 0.08 / 0.014). Letter sequences are
+  borderline (p 0.035 / 0.086). Age and time families share nothing beyond the general direction.
+- No single pair of families passes the multiple-comparison bar in both models.
+
+**Causal check** (`sweep_transfer.py`, 0.8B layer 12):
+- Setup: push the residual at the target word along a direction built only from the other families in its group,
+  and read which value the copy prompt repeats. The null builds the same direction from those families with their
+  ranks shuffled (60 draws). Families whose copy prompt fails the node check are left out.
+- **Social rank**: pooled z +2.9, and 6 of 7 families move up their own scale. The largest moves are nobility,
+  academic rank and school year.
+- **Magnitude**: z +2.2, 7 of 8 move up.
+- **Letter sequences**: z +1.8, 3 of 3 move up. The general direction moves none of them (0 of 3), so letters have a
+  shared direction of their own.
+- **Age and time**: nothing (z −0.5).
+- The effects are modest. A borrowed direction moves a family typically less than half as far as its own direction
+  does, for example 0.6 vs 2.7 values for geographic scale. The pooled z treats families as independent, so read it
+  as a summary, not a strict test.
