@@ -31,6 +31,7 @@
           left <b>as is</b>, and <b class="down">suppressed</b>.</p>
         <button id="try-example" class="primary" type="button">Try an example</button>
         <button id="go-find" class="secondary" type="button">Find a neuron for a topic</button>
+        <button id="go-scales" class="secondary" type="button">Steer along a scale</button>
         <button id="surprise" class="link" type="button">Surprise me</button>
       </div>
       <div id="lanes" hidden>
@@ -46,6 +47,7 @@
         <input id="prompt" placeholder="Ask anything…" aria-label="Question" enterkeyhint="send">
         <button id="send" class="send" type="submit" aria-label="Ask">↑</button>
       </div>
+      <div id="scale-vals" class="chips" role="group" aria-label="Point on the scale" hidden></div>
       <label class="strength"><span>Strength</span>
         <input id="strength" type="range" min="0" max="2" step="0.05" value="0.8" aria-label="Strength">
         <output id="strength-v">0.8</output></label>
@@ -89,7 +91,7 @@
     </div>
 
     <div class="xpane on" id="x-find">
-      <div class="seg small wide" id="find-mode"><button type="button" data-f="goal" class="on">Steer toward</button><button type="button" data-f="text">Reacts to</button></div>
+      <div class="seg small wide" id="find-mode"><button type="button" data-f="goal" class="on">Steer toward</button><button type="button" data-f="text">Reacts to</button><button type="button" data-f="scales">Scales</button></div>
 
       <div id="f-goal">
         <form id="goal-form">
@@ -105,6 +107,18 @@
             <p>2. All 86,016 neurons are scored by how directly what they write favors those words, layer by layer.</p>
             <p>3. The best candidates are actually pushed in two short sentences. Kept: the ones that make the topic's words more likely, ranked by how much probability moves to them. Pushes that shake everything else (high KL) tend to derail into repetition, so each gets a gentler recommended strength.</p>
             <p>4. The top ones start a short story at that strength, so you can see the effect before choosing.</p>
+          </div>
+        </details>
+      </div>
+
+      <div id="f-scales" hidden>
+        <p class="hint">Word families this model keeps in order, from the smallest or earliest to the largest or latest. Steering moves the answer to one word's average, either through the real words or along a straight line between the ends.</p>
+        <ol id="scale-rows" class="list"></ol>
+        <details id="scales-how"><summary>Where these come from</summary>
+          <div class="more fine">
+            <p>Each scale's words were put into eight template sentences, and the model's internal state at the word was averaged. The averages line up in the scale's order, in both Qwen3.5-0.8B and Qwen3.5-2B; days of the week form a circle (tools/shapes/family_sweep.py).</p>
+            <p>A word's average minus the scale's mean is the push. It is added after one layer at every token, scaled by Strength.</p>
+            <p>A straight line from the first word's average to the last skips most of the middle words. So in-between points only come out right when you step through the real words (tools/find_scales.py).</p>
           </div>
         </details>
       </div>

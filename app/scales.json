@@ -1,0 +1,282 @@
+{
+ "hidden": 1024,
+ "model": "Qwen/Qwen3.5-0.8B",
+ "scales": [
+  {
+   "id": "weekday",
+   "name": "Days of the week",
+   "vals": [
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+    "Sunday"
+   ],
+   "layer": 12,
+   "strength": 1.0,
+   "start": 2,
+   "offset": 0,
+   "suggest": [
+    "Which day is the meeting? Answer in one sentence.",
+    "What day is the party? Answer in one sentence."
+   ],
+   "check": {
+    "named": 1.0,
+    "middle_path": 1.0,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "life-stage",
+   "name": "Life stages",
+   "vals": [
+    "infant",
+    "baby",
+    "toddler",
+    "child",
+    "teenager",
+    "adult",
+    "senior"
+   ],
+   "layer": 12,
+   "strength": 1.2,
+   "start": 3,
+   "offset": 7,
+   "suggest": [
+    "Who is sitting in the waiting room? Answer in one sentence.",
+    "Who is playing in the park? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.86,
+    "middle_path": 0.8,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "wind",
+   "name": "Wind",
+   "vals": [
+    "calm",
+    "breeze",
+    "wind",
+    "gale",
+    "storm",
+    "hurricane"
+   ],
+   "layer": 6,
+   "strength": 1.0,
+   "start": 2,
+   "offset": 14,
+   "suggest": [
+    "What is the weather like at the coast today? Answer in one sentence.",
+    "Describe a morning at sea. Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.67,
+    "middle_path": 0.75,
+    "middle_chord": 0.25
+   }
+  },
+  {
+   "id": "reach",
+   "name": "How far",
+   "vals": [
+    "street",
+    "neighborhood",
+    "city",
+    "county",
+    "state",
+    "country",
+    "continent"
+   ],
+   "layer": 6,
+   "strength": 1.2,
+   "start": 3,
+   "offset": 20,
+   "suggest": [
+    "How far did the news spread? Answer in one sentence.",
+    "Where is the new rule in force? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.71,
+    "middle_path": 0.8,
+    "middle_chord": 0.2
+   }
+  },
+  {
+   "id": "job-title",
+   "name": "Job titles",
+   "vals": [
+    "intern",
+    "assistant",
+    "manager",
+    "director",
+    "CEO"
+   ],
+   "layer": 12,
+   "strength": 1.2,
+   "start": 2,
+   "offset": 27,
+   "suggest": [
+    "Who approved the new budget at your company? Answer in one sentence.",
+    "Who called the meeting? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.8,
+    "middle_path": 1.0,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "how-often",
+   "name": "How often",
+   "vals": [
+    "hourly",
+    "daily",
+    "weekly",
+    "monthly",
+    "quarterly",
+    "annually"
+   ],
+   "layer": 12,
+   "strength": 0.8,
+   "start": 3,
+   "offset": 32,
+   "suggest": [
+    "How often is the newsletter published? Answer in one sentence.",
+    "How often do you back up your files? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.67,
+    "middle_path": 0.75,
+    "middle_chord": 0.25
+   }
+  },
+  {
+   "id": "closeness",
+   "name": "Closeness",
+   "vals": [
+    "stranger",
+    "acquaintance",
+    "colleague",
+    "friend",
+    "partner",
+    "spouse"
+   ],
+   "layer": 12,
+   "strength": 0.8,
+   "start": 2,
+   "offset": 38,
+   "suggest": [
+    "Who did you have dinner with last night? Answer in one sentence.",
+    "Who did you call when you got the news? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.67,
+    "middle_path": 0.75,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "settlement",
+   "name": "Places to live",
+   "vals": [
+    "hamlet",
+    "village",
+    "town",
+    "city",
+    "metropolis"
+   ],
+   "layer": 12,
+   "strength": 0.6,
+   "start": 2,
+   "offset": 44,
+   "suggest": [
+    "Describe the place where you grew up in one sentence.",
+    "Where does your grandmother live? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.8,
+    "middle_path": 1.0,
+    "middle_chord": 0.6666666666666666
+   }
+  },
+  {
+   "id": "temperature",
+   "name": "Temperature",
+   "vals": [
+    "freezing",
+    "cold",
+    "cool",
+    "warm",
+    "hot"
+   ],
+   "layer": 6,
+   "strength": 1.2,
+   "start": 1,
+   "offset": 49,
+   "suggest": [
+    "How is the water in the lake today? Answer in one sentence.",
+    "How does the coffee taste? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.6,
+    "middle_path": 0.6666666666666666,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "nobility",
+   "name": "Nobility",
+   "vals": [
+    "baron",
+    "viscount",
+    "earl",
+    "marquis",
+    "duke",
+    "prince",
+    "king",
+    "emperor"
+   ],
+   "layer": 12,
+   "strength": 0.8,
+   "start": 4,
+   "offset": 54,
+   "suggest": [
+    "Who lives in the castle on the hill? Answer in one sentence.",
+    "Who rode into the village? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.5,
+    "middle_path": 0.5,
+    "middle_chord": 0.0
+   }
+  },
+  {
+   "id": "water",
+   "name": "Water",
+   "vals": [
+    "puddle",
+    "pond",
+    "lake",
+    "sea",
+    "ocean"
+   ],
+   "layer": 6,
+   "strength": 1.3,
+   "start": 2,
+   "offset": 62,
+   "suggest": [
+    "Where did you go swimming last summer? Answer in one sentence.",
+    "Where did the children play? Answer in one sentence."
+   ],
+   "check": {
+    "named": 0.6,
+    "middle_path": 0.6666666666666666,
+    "middle_chord": 0.0
+   }
+  }
+ ]
+}

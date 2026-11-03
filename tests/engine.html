@@ -74,6 +74,25 @@ try {
   log("decode", steps, "steps,", ((performance.now() - t0) / steps).toFixed(0), "ms/step");
   res.greedy_push_up = outs[0]; res.greedy = outs[1]; res.greedy_push_down = outs[2];
   for (const k of ["greedy", "greedy_push_up", "greedy_push_down"]) log(k, JSON.stringify(tok.decode(res[k])));
+  // greedy, 3 rows: + vector, none, - vector added to the residual stream after layer 12 (scale steering hook)
+  const vec = Float32Array.from({ length: m.H }, (_, h) => 0.05 * Math.sin(0.37 * h + 1));
+  m.setVectors([vec]);
+  m.reset(0); m.prefill(0, ids, { vec: 12 });
+  const lgv = await m.logitsRow(0);
+  res.vec_logits_top = [...lgv.keys()].sort((a, b) => lgv[b] - lgv[a]).slice(0, 20);
+  res.vec_logits_sample = []; for (let i = 0; i < 4096; i += 7) res.vec_logits_sample.push(lgv[i]);
+  m.setVectors([vec, null, vec.map(x => -x)]);
+  for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, ids, { vec: 12 }); }
+  const vo = [[], [], []], vd = [false, false, false];
+  for (let s = 0; s < STEPS; s++) {
+    const nxt = await m.argmaxAll();
+    nxt.forEach((t, r) => { if (!vd[r]) { if (t === eos) vd[r] = true; else vo[r].push(t); } });
+    if (vd.every(Boolean)) break;
+    m.step(nxt, { vec: 12 });
+  }
+  res.greedy_vec_up = vo[0]; res.greedy_vec_down = vo[2];
+  res.greedy_vec_none_matches = JSON.stringify(vo[1]) === JSON.stringify(outs[1]);
+  for (const k of ["greedy_vec_up", "greedy_vec_down"]) log(k, JSON.stringify(tok.decode(res[k])));
   window.__result = res;
 } catch (e) {
   log("ERROR", e.stack || e);

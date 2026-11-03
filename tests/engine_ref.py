@@ -46,6 +46,19 @@ with torch.inference_mode():
     push.update({12: (1234, -8.0)})
     res["greedy_push_down"] = greedy()
     push.clear()
+    # residual vector after layer 12 (the scale steering hook): 0.05 * sin(0.37 h + 1), added at every position
+    vec = 0.05 * torch.sin(0.37 * torch.arange(lm.config.hidden_size, dtype=torch.float32) + 1)
+    sign = {"s": 0.0}
+    hv = lm.layers[12].register_forward_hook(
+        lambda mod, inp, out: ((out[0] + sign["s"] * vec,) + tuple(out[1:])) if isinstance(out, tuple) else out + sign["s"] * vec)
+    sign["s"] = 1.0
+    lgv = m(input_ids=torch.tensor([ids])).logits[0, -1]
+    res["vec_logits_top"] = lgv.topk(20).indices.tolist()
+    res["vec_logits_top_vals"] = lgv.topk(20).values.tolist()
+    res["vec_logits_sample"] = lgv[:4096:7].tolist()
+    res["greedy_vec_up"] = greedy()
+    sign["s"] = -1.0; res["greedy_vec_down"] = greedy()
+    hv.remove()
 # longer prompts: 17-32 tokens (two passes of the matrix-vector kernel) and over 32 (tiled matmul)
 res["extra"] = []
 for text in ["Tell me about your day, and please be very specific about the weather outside.",
@@ -57,6 +70,6 @@ for text in ["Tell me about your day, and please be very specific about the weat
         lg2 = m(input_ids=torch.tensor([ids2])).logits[0, -1]
     res["extra"].append({"text": text, "ids": ids2, "logits_top": lg2.topk(20).indices.tolist(), "logits_sample": lg2[:4096:7].tolist()})
     print("extra prompt", len(ids2), "tokens")
-for k in ("greedy", "greedy_push_up", "greedy_push_down"):
+for k in ("greedy", "greedy_push_up", "greedy_push_down", "greedy_vec_up", "greedy_vec_down"):
     print(k, repr(tok.decode(res[k])))
 json.dump(res, open(out_path, "w"))

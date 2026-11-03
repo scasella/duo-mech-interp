@@ -118,3 +118,34 @@ def main(run: str = "pilot", layers: str = "12", tokens: int = 2_000_000, store:
     if not skip_analyze:
         analyze.remote(run, L)
     print(f"done. fetch with: modal volume get qwen-scope-shapes runs/{run} ./runs/{run}")
+
+
+# Scale steering check for the app (tools/find_scales.py) on a GPU: the sweep's value averages are sent with the call.
+scale_image = (image.add_local_file(os.path.join(HERE, "family_sweep.py"), "/root/shapes/family_sweep.py")
+               .add_local_file(os.path.join(HERE, "core.py"), "/root/shapes/core.py")
+               .add_local_file(os.path.join(HERE, "..", "find_scales.py"), "/root/find_scales.py"))
+
+
+@app.function(image=scale_image, gpu="A10G", volumes={"/data": vol}, timeout=3600)
+def scale_check(means: dict, layers: str, strengths: str, only: str = ""):
+    import subprocess
+    from huggingface_hub import snapshot_download
+    path = snapshot_download("Qwen/Qwen3.5-0.8B", cache_dir="/data/hf")
+    os.makedirs("/tmp/run", exist_ok=True)
+    for name, data in means.items():
+        open(f"/tmp/run/{name}", "wb").write(data)
+    env = dict(os.environ, DEVICE="cuda", ONLY=only)
+    r = subprocess.run(["python", "/root/find_scales.py", path, "/tmp/run", "/tmp/out.json", layers, strengths],
+                       env=env, capture_output=True, text=True)
+    out = open("/tmp/out.json").read() if os.path.exists("/tmp/out.json") else None
+    return r.stdout, r.stderr[-4000:], out
+
+
+@app.local_entrypoint()
+def scales(run: str, out: str, layers: str = "6,12", strengths: str = "0.6,0.8,1,1.2,1.4", only: str = ""):
+    """modal run tools/shapes/modal_app.py::scales --run <family_sweep dir of 0.8B> --out scales.json"""
+    means = {f: open(os.path.join(run, f), "rb").read() for f in os.listdir(run) if f.endswith("_means.npy") or f == "family_sweep.json"}
+    stdout, stderr, res = scale_check.remote(means, layers, strengths, only)
+    print(stdout)
+    if res is None: print(stderr)
+    else: open(out, "w").write(res)

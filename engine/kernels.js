@@ -187,6 +187,21 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 }`;
 
 // rows of a quantized table (embedding lookup): y[t, :] = E[ids[t], :] * mul
+// x[m, :] += v[row of m, :]: a fixed vector added to the residual stream after one layer, one vector per row (up to 4).
+export const resAdd = /* wgsl */ `
+struct P { M: u32, H: u32, T: u32, rowBase: u32 };
+@group(0) @binding(0) var<uniform> p: P;
+@group(0) @binding(1) var<storage, read> v: array<f32>;
+@group(0) @binding(2) var<storage, read_write> x: array<f32>;
+@compute @workgroup_size(256)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let h = gid.x;
+  let m = gid.y;
+  if (h >= p.H || m >= p.M) { return; }
+  let r = min(p.rowBase + m / p.T, 3u);
+  x[m * p.H + h] += v[r * p.H + h];
+}`;
+
 export const gather = /* wgsl */ `
 struct P { T: u32, K: u32, mul: f32, pad: u32 };
 @group(0) @binding(0) var<uniform> p: P;

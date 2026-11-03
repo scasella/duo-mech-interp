@@ -9,6 +9,7 @@
 //   capture  every neuron at every token of a forward call -> Float32Array [layers, T, inter]
 //   heads    per-head output scale on linear-attention layers (ablation)
 //   resid    residual stream after each layer -> Float32Array [layers, T, hidden]
+//   vec      add one vector per row to the residual stream after layer `vec` (rows set with setVectors), every token
 
 import { GPU, F } from "./gpu.js";
 import * as K from "./kernels.js";
@@ -324,6 +325,7 @@ export class Model {
     st.logits = g.buffer(rows * this.V * 4, "logits");
     st.amax = g.buffer(rows * 8, "argmax");
     st.push = g.buffer(this.L * 256, "pushes");  // 8 push records per layer
+    st.vec = g.buffer(4 * this.H * 4, "vec");    // residual vectors, one per row
     st.kv = [];
     st.lin = [];
     for (const ly of this.layers) {
@@ -364,6 +366,13 @@ export class Model {
       ly.headScale = s ? Float32Array.from(s) : new Float32Array(this.Hv).fill(1);
       this.gpu.write(ly.headScaleB, ly.headScale);
     }
+  }
+
+  // Residual vectors for opts.vec: one Float32Array(H) per row (null or missing: zero).
+  setVectors(rows) {
+    const buf = new Float32Array(4 * this.H);
+    rows.forEach((v, r) => { if (v) buf.set(v, r * this.H); });
+    this.gpu.write(this.st.vec, buf);
   }
 
   // ---------- forward ----------
@@ -448,6 +457,7 @@ export class Model {
           [M, this.I, T, rowBase, ps.length, 0, 0, 0]);
       }
       this._mm(st.a, ly.down, st.x, M, true);
+      if (opts.vec === l) g.run("resadd", K.resAdd, [st.vec, st.x], [Math.ceil(H / 256), M], [M, H, T, rowBase]);
       if (opts.resid === true) this._snapResid(l, M, opts);
     }
     // last token of each row -> final norm

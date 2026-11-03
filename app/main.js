@@ -5,6 +5,7 @@ import { watch } from "./layout.js";
 import { createMap } from "./map.js";
 import { CORPUS } from "./corpus.js";
 import { EXAMPLES } from "./examples.js";
+import { loadScales } from "./scales.js";
 
 // Two places: Steer (ask once, compare three answers) and Explore (Neuron · Find · Browse). On the inner display they
 // face each other across the fold; on the outer display they are two tabs.
@@ -18,7 +19,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const show = t => t.replace(/\n/g, "⏎").replace(/^ +$/, m => "␣".repeat(m.length)).replace(/\t/g, "⇥");
 const SUGGESTIONS = ["Who are you?", "What do you love most?", "Describe the ocean.", "Tell me a short story."];
-const RANGE = { add: { max: 2, step: 0.05 }, mul: { max: 8, step: 0.5 } };
+const RANGE = { add: { max: 2, step: 0.05 }, mul: { max: 8, step: 0.5 }, scale: { max: 2, step: 0.1 } };
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem("duo." + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -30,8 +31,9 @@ const parseKey = k => { const m = /L(\d+)\/N(\d+)/.exec(k); return m ? { layer: 
 const names0 = store.get("names", {});
 const state = {
   focus: null,
+  scale: null,               // {id, idx}: steering along a scale instead of a neuron
   mode: "add",
-  dose: { add: 0.8, mul: 2 },
+  dose: { add: 0.8, mul: 2, scale: 1 },
   keep: false,
   rows: [[], [], []],
   lastQ: null,
@@ -46,6 +48,7 @@ let ex = null, model = null, tok = null, map = null;
 let job = null;            // the running steer: {cancel}
 let calibration = null;    // promise of the background calibration
 let calFrac = 0;
+let scales = null;         // promise of {list, get, vec, chord} (app/scales.js), loaded on first use
 
 // ---------- layout ----------
 
@@ -188,24 +191,39 @@ function start() {
   map.setMarks(new Set(state.saved.map(k => { const f = parseKey(k); return `${f.layer}:${f.n}`; })));
   showWeightMap();
   renderStrength();
-  const h = parseHash();
+  const h = parseHash(), hs = /^#scale-([a-z-]+)/.exec(location.hash);
   const f = h || store.get("focus", null);
-  if (f) openNeuron(f.layer, f.n, { go: null });
+  if (hs) openScale(hs[1], { go: null }).then(() => { if (!state.scale) { renderHeader(); renderEmpty(); } });
+  else if (f) openNeuron(f.layer, f.n, { go: null });
   else { renderHeader(); renderEmpty(); }
   if (!ex.scale) setTimeout(() => (calibration ||= runCalibration()), 1500);
 }
 
 function parseHash() {
+  if (/^#scale-/.test(location.hash)) return null;
   const m = /L(\d+)\D*N?(\d+)/i.exec(location.hash);
   return m ? { layer: +m[1], n: +m[2] } : null;
 }
-addEventListener("hashchange", () => { const h = parseHash(); if (h && ex && (h.layer !== state.focus?.layer || h.n !== state.focus?.n)) openNeuron(h.layer, h.n); });
+addEventListener("hashchange", () => {
+  const hs = /^#scale-([a-z-]+)/.exec(location.hash);
+  if (hs) { if (ex && hs[1] !== state.scale?.id) openScale(hs[1]); return; }
+  const h = parseHash();
+  if (h && ex && (h.layer !== state.focus?.layer || h.n !== state.focus?.n)) openNeuron(h.layer, h.n);
+});
 
 // ---------- steer ----------
 
 const label = (l, n) => state.names[key(l, n)] || `Neuron ${n}`;
 
 function renderHeader() {
+  const sc = scaleOf();
+  if (sc) {
+    $("#who-name").textContent = sc.name;
+    $("#who").classList.remove("none");
+    $("#who-sub").textContent = `Scale · ${sc.vals[0]} → ${sc.vals[sc.vals.length - 1]}`;
+    $("#save").hidden = true;
+    return;
+  }
   const f = state.focus;
   $("#who-name").textContent = f ? label(f.layer, f.n) : "Neuron Explorer";
   $("#who").classList.toggle("none", !f);
@@ -217,7 +235,10 @@ function renderHeader() {
   $("#save").setAttribute("aria-label", saved ? "Remove from your neurons" : "Save this neuron");
 }
 
-$("#who").onclick = () => { setXTab(state.focus ? "about" : "find"); if (narrow()) setPane("explore"); };
+$("#who").onclick = () => {
+  if (state.scale) { setXTab("find"); setFindMode("scales"); } else setXTab(state.focus ? "about" : "find");
+  if (narrow()) setPane("explore");
+};
 $("#save").onclick = () => {
   const f = state.focus; if (!f) return;
   const k = key(f.layer, f.n);
@@ -233,14 +254,25 @@ function renderEmpty() {
   const hasAnswers = state.rows[0].length > 0;
   $("#lanes").hidden = !hasAnswers;
   e.hidden = hasAnswers;
-  $("#composer").hidden = !f;
+  $("#composer").hidden = !f && !state.scale;
   renderSuggest();
   if (hasAnswers) return;
+  const sc = scaleOf();
+  if (sc) {
+    const V = sc.vals.length;
+    e.innerHTML = `<h2>Steer along ${esc(sc.name.toLowerCase())}</h2>
+      <p>Pick a point on the scale below, then ask something. The model answers three times: pushed to that word's average <b class="up">through the real words</b>, left <b>as is</b>, and pushed the same distance <b class="down">along a straight line</b> from “${esc(sc.vals[0])}” to “${esc(sc.vals[V - 1])}”.</p>
+      <p class="fine">In this model the words of a scale are in order, but each has its own direction. A straight line between the ends passes the middle words by, so the middle answers usually differ.</p>` +
+      (state.lastQ ? `<button id="ask-again" class="primary" type="button">Ask “${esc(state.lastQ)}”</button>` : "");
+    $("#ask-again")?.addEventListener("click", () => ask(state.lastQ));
+    return;
+  }
   if (!f) {
     e.innerHTML = `<h2>Choose a neuron to start</h2>
       <p>You ask a question once. The model answers three times: with the neuron <b class="up">boosted</b>, left <b>as is</b>, and <b class="down">suppressed</b>.</p>
       <button id="try-example" class="primary" type="button">Try an example</button>
       <button id="go-find" class="secondary" type="button">Find neurons in your own words</button>
+      <button id="go-scales" class="secondary" type="button">Steer along a scale</button>
       <button id="surprise" class="link" type="button">Surprise me</button>`;
   } else {
     e.innerHTML = `<h2>Ask ${esc(label(f.layer, f.n))} something</h2>
@@ -250,13 +282,15 @@ function renderEmpty() {
   }
   $("#try-example")?.addEventListener("click", tryExample);
   $("#go-find")?.addEventListener("click", () => { setXTab("find"); setFindMode("goal"); if (narrow()) setPane("explore"); setTimeout(() => $("#goal-text").focus(), 50); });
+  $("#go-scales")?.addEventListener("click", () => { setXTab("find"); setFindMode("scales"); if (narrow()) setPane("explore"); });
   $("#surprise")?.addEventListener("click", surprise);
   $("#ask-again")?.addEventListener("click", () => ask(state.lastQ));
 }
 
 function renderSuggest() {
-  const show = state.focus && !job && state.rows[0].length === 0;
-  $("#suggest").innerHTML = show ? SUGGESTIONS.map(s => `<button type="button">${esc(s)}</button>`).join("") : "";
+  const show = (state.focus || state.scale) && !job && state.rows[0].length === 0;
+  const list = scaleOf()?.suggest || SUGGESTIONS;
+  $("#suggest").innerHTML = show ? list.map(s => `<button type="button">${esc(s)}</button>`).join("") : "";
   $("#suggest").hidden = !show;
 }
 $("#suggest").addEventListener("click", e => { const b = e.target.closest("button"); if (b) ask(b.textContent); });
@@ -283,19 +317,86 @@ function doseText(r) {
   if (state.mode === "mul") return r === 0 ? `×${d}` : `×${-d}`;
   return r === 0 ? `+${d}` : `−${d}`;
 }
+const doseMode = () => (state.scale ? "scale" : state.mode);
 function renderStrength() {
-  const s = $("#strength"), rg = RANGE[state.mode];
-  s.max = rg.max; s.step = rg.step; s.value = state.dose[state.mode];
-  $("#strength-v").textContent = state.mode === "mul" ? `×${state.dose.mul}` : state.dose.add;
-  $$(".lane .dose").forEach((el, i) => (el.textContent = doseText(i === 0 ? 0 : 2)));
+  const s = $("#strength"), md = doseMode(), rg = RANGE[md];
+  s.max = rg.max; s.step = rg.step; s.value = state.dose[md];
+  $("#strength-v").textContent = md === "add" ? state.dose.add : `×${state.dose[md]}`;
+  renderLaneTitles();
   $$("#mode button").forEach(b => b.classList.toggle("on", b.dataset.m === state.mode));
 }
-$("#strength").addEventListener("input", e => { state.dose[state.mode] = +(+e.target.value).toFixed(2); renderStrength(); });
+function renderLaneTitles() {
+  const sc = scaleOf(), h = $$(".lane h3");
+  if (sc) {
+    const i = state.scale.idx, V = sc.vals.length;
+    h[0].innerHTML = `● Through the words <small class="dose">${esc(sc.vals[i])}</small>`;
+    h[2].innerHTML = `— Straight line <small class="dose">${Math.round((100 * i) / (V - 1))}% of the way</small>`;
+  } else {
+    h[0].innerHTML = `▲ Boosted <small class="dose">${doseText(0)}</small>`;
+    h[2].innerHTML = `▼ Suppressed <small class="dose">${doseText(2)}</small>`;
+  }
+}
+$("#strength").addEventListener("input", e => { state.dose[doseMode()] = +(+e.target.value).toFixed(2); renderStrength(); });
+
+// ---------- steer along a scale ----------
+
+const scaleOf = () => (state.scale && scales?.ready ? scales.ready.get(state.scale.id) : null);
+function ensureScales() {
+  if (!scales) {
+    scales = loadScales().then(s => (scales.ready = s));
+    scales.catch(err => { scales = null; fail("Could not load the scales", err); });
+  }
+  return scales;
+}
+
+async function openScale(id, { go = "steer", idx = null } = {}) {
+  if (!ex) return;
+  const S = await ensureScales();
+  const sc = S.get(id);
+  if (!sc) return;
+  stopJob();
+  state.focus = null;
+  state.scale = { id, idx: idx ?? sc.start };
+  state.dose.scale = sc.strength;
+  state.rows = [[], [], []];
+  history.replaceState(null, "", `#scale-${id}`);
+  map?.setFocus(null);
+  map?.setWeb(null);
+  renderHeader(); renderLanes(); renderEmpty(); renderAbout(); renderScaleVals(); renderScaleList();
+  if (go && narrow()) setPane(go);
+}
+
+function renderScaleVals() {
+  const sc = scaleOf(), el = $("#scale-vals");
+  el.hidden = !sc;
+  if (!sc) { el.innerHTML = ""; return; }
+  el.innerHTML = sc.vals.map((v, i) => `<button type="button" data-i="${i}" class="${i === state.scale.idx ? "on" : ""}" aria-pressed="${i === state.scale.idx}">${esc(v)}</button>`).join("");
+}
+$("#scale-vals").addEventListener("click", e => {
+  const b = e.target.closest("button[data-i]");
+  if (!b || !state.scale) return;
+  state.scale.idx = +b.dataset.i;
+  renderScaleVals(); renderLaneTitles();
+  if (state.rows[0].length && state.lastQ && !state.keep) ask(state.lastQ);  // slide along: re-ask at the new point
+});
+
+async function renderScaleList() {
+  const ol = $("#scale-rows");
+  if (!scales) ol.innerHTML = `<li class="none">Loading…</li>`;
+  let S;
+  try { S = await ensureScales(); } catch { return; }
+  ol.innerHTML = S.list.map(sc => `<li data-s="${sc.id}"${state.scale?.id === sc.id ? ` class="on"` : ""}>
+    <span class="t"><b>${esc(sc.name)}</b><span class="dim">${sc.vals.length} words</span></span>
+    <span class="w">${esc(sc.vals.join(" → "))}</span></li>`).join("");
+}
+$("#scale-rows").addEventListener("click", e => { const li = e.target.closest("li[data-s]"); if (li) openScale(li.dataset.s, { go: "steer" }); });
 
 async function openNeuron(layer, n, { go = "steer" } = {}) {
   if (!ex || !(layer >= 0 && layer < model.L && n >= 0 && n < model.I)) return;
   stopJob();
   state.focus = { layer, n };
+  state.scale = null;
+  renderScaleVals();
   store.set("focus", state.focus);
   state.recent = [{ layer, n }, ...state.recent.filter(r => r.layer !== layer || r.n !== n)].slice(0, 30);
   store.set("recent", state.recent);
@@ -348,9 +449,12 @@ $("#composer").addEventListener("submit", e => {
 });
 
 async function ask(text) {
-  if (!ex || !state.focus) return;
+  if (!ex || !(state.focus || scaleOf())) return;
   if (job) { stopJob(); await job.done; }
-  const { layer, n } = state.focus;
+  const sc = scaleOf();
+  const how = sc
+    ? { vec: { layer: sc.layer, rows: [scales.ready.vec(sc.id, state.scale.idx, state.dose.scale), null, scales.ready.chord(sc.id, state.scale.idx, state.dose.scale)] } }
+    : { pushes: [{ layer: state.focus.layer, n: state.focus.n, dose: state.dose[state.mode], mode: state.mode }] };
   state.lastQ = text;
   // each run writes into its own rows: opening another neuron replaces state.rows, and the run (which stops at its
   // next token) must not touch the new ones
@@ -370,7 +474,7 @@ async function ask(text) {
   const says = $$(".lane .say");
   try {
     await ex.steer({
-      pushes: [{ layer, n, dose: state.dose[state.mode], mode: state.mode }],
+      ...how,
       rowsMessages: rows.map(rs => rs.slice(0, -1).map(m => ({ role: m.role, content: m.content }))),
       maxNew: 120,
       cancel,
@@ -542,6 +646,8 @@ function setFindMode(f) {
   $$("#find-mode button").forEach(b => b.classList.toggle("on", b.dataset.f === f));
   $("#f-goal").hidden = f !== "goal";
   $("#f-text").hidden = f !== "text";
+  $("#f-scales").hidden = f !== "scales";
+  if (f === "scales") renderScaleList();
 }
 $$("#find-mode button").forEach(b => (b.onclick = () => setFindMode(b.dataset.f)));
 

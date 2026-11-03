@@ -113,13 +113,16 @@ export class Explorer {
 
   // Greedy (or sampled) decode of three conversations at once: row 0 pushed up, row 1 untouched, row 2 pushed down.
   // rowsMessages[r] is row r's own message list. onDelta(row, textDelta) streams text; returns the three texts.
-  async steer({ pushes: list, rowsMessages, maxNew = 160, temperature = 0, onDelta = () => {}, cancel = { stop: false } }) {
+  // vec: {layer, rows: [Float32Array(H) | null] x 3} adds each row's vector to the residual stream after that layer.
+  async steer({ pushes: list = [], vec = null, rowsMessages, maxNew = 160, temperature = 0, onDelta = () => {}, cancel = { stop: false } }) {
     const pushes = await this.pushes(list.map(p => ({ ...p, rows: [1, 0, -1] })));
     return this.lock(async () => {
       const m = this.m, tok = this.tok;
       const seqs = rowsMessages.map(msgs => tok.encode(tok.chat(msgs)));
       if (Math.max(...seqs.map(s => s.length)) + maxNew > m.maxLen) throw new Error("conversation too long for the cache");
-      for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, seqs[r], { pushes }); }
+      const fw = { pushes };
+      if (vec) { m.setVectors(vec.rows); fw.vec = vec.layer; }
+      for (let r = 0; r < 3; r++) { m.reset(r); m.prefill(r, seqs[r], fw); }
       const out = [[], [], []], sent = ["", "", ""], done = [false, false, false];
       for (let s = 0; s < maxNew && !cancel.stop; s++) {
         let nxt;
@@ -135,7 +138,7 @@ export class Explorer {
           if (!text.endsWith("\ufffd")) { onDelta(r, text.slice(sent[r].length)); sent[r] = text; }
         }
         if (done.every(Boolean)) break;
-        m.step(nxt, { pushes });
+        m.step(nxt, fw);
       }
       return sent;
     });

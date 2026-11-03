@@ -124,6 +124,10 @@ html[data-layout=tall] #stage, html[data-layout=laptop] #stage { overflow: hidde
 .ask input { flex: 1; border-radius: 22px; padding: 11px 16px; }
 .send { width: 44px; height: 44px; border-radius: 22px; background: #f2f2f2; color: #000; font-size: 20px; font-weight: 700; flex: none; }
 .send.stop { background: var(--raise2); color: var(--ink); font-size: 14px; }
+.chips { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; margin: 0 -16px; padding: 0 16px; }
+.chips::-webkit-scrollbar { display: none; }
+.chips button { flex: none; background: var(--raise); border-radius: 16px; padding: 6px 12px; font-size: 14px; color: var(--dim); min-height: 36px; white-space: nowrap; border: 1px solid transparent; }
+.chips button.on { color: var(--ink); border-color: var(--up); background: var(--surface); font-weight: 600; }
 .strength { display: flex; align-items: center; gap: 12px; font-size: 14px; color: var(--dim); min-height: 36px; }
 .strength input { flex: 1; padding: 0; background: none; accent-color: var(--up); height: 32px; }
 .strength output { font-family: var(--mono); color: var(--ink); width: 3.2em; text-align: right; }
@@ -160,6 +164,7 @@ details[open] summary::after { content: "−"; }
 .list { list-style: none; margin: 0; padding: 0; }
 .list li { display: flex; flex-direction: column; gap: 2px; padding: 11px 4px; border-bottom: 1px solid var(--line); cursor: pointer; min-height: 48px; justify-content: center; }
 .list li:active { background: var(--raise); }
+.list li.on .t b { color: var(--up); }
 .list li .t { display: flex; gap: 8px; align-items: baseline; }
 .list li .t b { font-weight: 600; }
 .list li .t .dim { color: var(--dim); font-size: 13px; }

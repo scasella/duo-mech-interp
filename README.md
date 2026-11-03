@@ -16,6 +16,10 @@ Every MLP neuron (24 layers × 3,584) can be turned up or down while the model a
     recommended strength and the start of a test story written with it (see below).
   - **Find › Reacts to**: type any text; see the neurons that fire most on it (scored against each neuron's range on
     a small built-in corpus, measured once in the background), tap a word for just that word's neurons.
+  - **Find › Scales**: steer along a word scale instead of a neuron (wind from calm to hurricane, job titles from
+    intern to CEO, days of the week…). Pick a point on the scale; the three answers become: pushed to that word
+    **through the real words**, **as is**, and pushed the same distance **along a straight line** between the ends
+    (see below).
   - **Neuron**: the words boosting or suppressing it favors (logit lens), a name, and behind collapsed sections:
     where it fires in sample texts, how it reacts to your own text, its effect on the next word (steer lens), its
     connected neurons (direct path through the weights), and advanced options (multiply instead of push, keep a
@@ -24,8 +28,38 @@ Every MLP neuron (24 layers × 3,584) can be turned up or down while the model a
     lift to open), and opening a neuron by number.
 
 First visit: a three-step welcome and one button (download, 1.5 GB once). After loading: **Try an example** (a
-neuron whose push visibly changes answers), **Find neurons in your own words**, or **Surprise me**. `#L12N1234` links
-open a neuron; names and saved neurons stay in the browser.
+neuron whose push visibly changes answers), **Find neurons in your own words**, **Steer along a scale**, or
+**Surprise me**. `#L12N1234` links open a neuron and `#scale-wind` a scale; names and saved neurons stay in the
+browser.
+
+## Steering along a scale
+
+The research in `tools/shapes` found word families that this model keeps in order inside its residual stream, in both
+Qwen3.5-0.8B and 2B: wind, settlements, job titles, life stages, how often, closeness and others (weekdays form a
+circle). Each word has an average internal state (eight template sentences, at the word). Its push is that average
+minus the family's mean, added to the residual stream after one layer at every token (`setVectors` and the `vec`
+option in `engine/model.js`: one vector per row).
+
+Two ways to get to a middle word, shown side by side:
+- **Through the real words**: push to that word's own average.
+- **Straight line**: push to the same fraction of the way from the first word's average to the last's.
+
+They differ because each word has its own direction, with the order living in only a few shared axes. Checked in
+PyTorch (`tools/find_scales.py`, greedy, one-sentence answers; `modal_app.py::scales` runs it on a GPU). For the 11
+scales in the app, answers pushed through the real words name the chosen word 50–100% of the time. On middle words
+the real words give 50–100% and the straight line 0–25%, except places to live (67%). Job titles: 100% vs 0%.
+Wind: 75% vs 25%. Days of the week: the real words name every day, while a straight line from Monday to Thursday says
+Monday, then jumps to Thursday. Six families were left out because their answers rarely name the word, even when
+steered toward it (letter grades, decade of life, months, sizes, how soon, school level).
+
+On the WebGPU engine (`tests/scales.mjs`), wind at "wind" gives "The wind is blowing from the west." through the real
+words and "The coast today is a mix of gentle breezes and a clear, blue sky." along the straight line, the same text as
+PyTorch. Days of the week at Wednesday give Wednesday through the real words. Along the app's straight line (Monday to
+Sunday, which are neighbours on the circle) they give Monday. The suggested questions end in "Answer in one sentence.",
+as in the check: without it this model often answers "I don't have access to real-time data" in all three rows.
+
+`tools/export_scales.py` writes `app/scales.json` (names, words, layer, strength, a starting word where the two paths
+differ) and `app/scales.bin` (67 vectors, float16, 134 KB).
 
 ## Finding neurons that steer
 
@@ -109,6 +143,7 @@ SMALL_CORPUS=1 node tests/e2e.mjs <site url> <out dir>                   # end-u
 node tests/profile.mjs <served url> <hub mirror url>                     # time per kernel type
 node tests/steerfind.mjs <served url> <hub mirror url> [topic=music]     # topic search on the WebGPU engine vs tools/find_steering.py
 node tests/screens.mjs <served url> <hub mirror url> <out dir>           # screenshots at iPhone Duo viewport sizes
+node tests/scales.mjs <served url> <hub mirror url> <out dir>            # scale steering in the app: list, answers, links
 ```
 
 `engine.mjs` compares the WGSL engine with Hugging Face transformers (float32) on the same chat prompt. Last run
@@ -120,6 +155,7 @@ node tests/screens.mjs <served url> <hub mirror url> <out dir>           # scree
 | next-token logits | same top-1, top-20 overlap 20/20, relative error 1.9%, correlation 0.9998 |
 | neuron activations (input of `down_proj`), layers 0 / 3 / 11 / 23 | relative error 1.6–4.2% (int8 weights) |
 | greedy decode, three rows in one batch: L12 N1234 pushed +8 / untouched / −8 | +8 and untouched: tokens match; −8: first 3 match, the 4th is a near tie in the reference itself ("3" 18.050 vs "wen" 18.011) |
+| residual vector after layer 12 (scale steering hook), 0.05·sin(0.37h + 1), every token | next-token logits: top-20 overlap 20/20, relative error 3.0%; the top-1 differs on a near tie in the reference (22.175 vs 22.118), so greedy text diverges from the first token; the untouched row matches the plain run |
 
 ## What is not ported
 
