@@ -1,4 +1,4 @@
-# Targeted sweep: ordered and cyclic word families nobody has checked in a model's geometry.
+# Targeted sweep: 56 ordered and cyclic word families, with known families as controls.
 #   python tools/shapes/family_sweep.py <model dir or HF id> <out dir> [layers] [--no-steer] [--cache DIR]
 # For each family (values in a known order, 8 template sentences, a copy prompt):
 #   1. Residual at the value word (last token of the word; multi-token words allowed), per template and layer;

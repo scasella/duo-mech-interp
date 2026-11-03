@@ -182,7 +182,20 @@ FineWeb-Edu):
   - a commonness block puts rare against common (0.60);
   - a good/bad block's first axis is degree (better/best vs good), not polarity.
 
-## Round three: a targeted sweep of 56 word families nobody had checked
+## Round three: a targeted sweep of 56 word families
+
+**Prior work.** That words with a real-world order line up along a direction is established, so these families are
+new examples, not a new kind of structure:
+- Grand et al. 2022: semantic projection recovers size, danger and wealth from word embeddings.
+- Heinzerling & Inui 2024: monotonic, causal directions for numeric properties in LLM hidden states.
+- Scalar adjectives: BERT 2020, LLMs 2024.
+- Linear number values (COLING 2025).
+- Successor heads: one position code shared by numbers, days, months and letters.
+- A 2026 granularity axis for social roles.
+- 2026 work on ordinal probes and steering to points on a scale.
+
+A quick search found none of these specific word lists named. That is weak evidence, and anyone with the same lists
+would likely get the same result.
 
 `family_sweep.py` tests 56 families whose order is known from the world, not from the model:
 - ranks: military, church, nobility, corporate, academic, chess, cards, status tiers, credit ratings;
