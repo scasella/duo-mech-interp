@@ -140,3 +140,37 @@ scale while the model judges another domain, against random word-pair contrasts.
 - Affection is warmth (warm→friendly z −1.1; axes unaligned).
 - Serious or important is heavy.
 - Time is distance.
+
+## Round two (candidate scales, WordNet atlas, block-sparse featurizer)
+
+**Candidate scales** (`scale_validate.py`; order of the per-word averages on their top axis):
+
+| Scale | 0.8B (layers 6, 12) | 2B (layers 6, 12, 18) | Straight push |
+|---|---|---|---|
+| How soon (someday → eventually → later → soon → shortly → immediately → now) | 1.00, 0.96 | 0.96, 0.96, 0.86 | skips all 5 middle words |
+| Outbreak size (case → cluster → outbreak → epidemic → pandemic) | 0.90 | 0.90–1.00 | inconclusive |
+| Speed | 0.93 at layer 12 | 0.54–0.86 | skips most of the middle |
+| Togetherness | not clearly ordered | not clearly ordered | inconclusive |
+
+- For how soon, the path through the real words walks through all seven. It is a new curved, ordered scale.
+- Outbreak size and togetherness are inconclusive on the straight-push test because the copy prompt can't produce their
+  middle words.
+
+**WordNet atlas** (`antonym_atlas.py`; 253 scales from adjective antonyms, both models):
+- The top shared direction is Osgood's evaluation: 11–12% of scale variance vs 7–8% for random axes; evaluation
+  markers load 0.48.
+- Potency appears only as a weaker intensity dial. There is no activity dial.
+- No cross-domain pair beats the multiple-comparison bar on its own. The coherent candidate, north–south ~ up–down
+  and ascending–descending, is causal in 0.8B (`cross_steer.py`): south→north raises "up" words, z 4.0 with valence
+  removed; slow→fast does nothing.
+
+**Block-sparse featurizer** (`bsf.py`, `modal_app.py::blocks`, `bsf_analyze.py`; 0.8B layer 12, 60M tokens of
+FineWeb-Edu):
+- Setup: 8,192 blocks of 3 dimensions (32 active) reach R² 0.80. A matched TopK SAE (24,576 features, 96 active)
+  reaches 0.84.
+- No family gets a dedicated unit in either. The best blocks are 3–32% dedicated, the best SAE features 4–28%.
+- Months (7/12, p 0.02) and ordinals (0.96, p 0.01) are partly ordered inside one block. Weekdays are not (2/7).
+- Blocks do capture common graded concepts with an ordered internal axis:
+  - two size blocks put small against large (rank correlation 0.81 and 0.82);
+  - a commonness block puts rare against common (0.60);
+  - a good/bad block's first axis is degree (better/best vs good), not polarity.
